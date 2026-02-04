@@ -1,0 +1,38 @@
+name: Sync main with upstream
+
+on:
+  schedule:
+    # Run weekly on Mondays at 6:00 AM UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    # Allow manual trigger from GitHub UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Pull upstream changes into main
+        run: |
+          git checkout main
+          git pull https://github.com/GStreamer/gstreamer.git main
+          git push origin main
+
+      - name: Create Pull Request to ignis-main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create --base ignis-main --head main --title "Sync upstream changes to ignis-main" --body "This PR syncs the latest upstream changes from main into ignis-main." || echo "PR might already exist or no changes to merge"
