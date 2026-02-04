@@ -12,7 +12,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
 
     steps:
       - name: Checkout repository
@@ -25,14 +24,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Pull upstream changes into main
+      - name: Sync main from upstream
         run: |
+          # 1. Update main with latest upstream changes
           git checkout main
           git pull https://github.com/GStreamer/gstreamer.git main
           git push origin main
 
-      - name: Create Pull Request to ignis-main
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge upstream updates into ignis-main
         run: |
-          gh pr create --base ignis-main --head main --title "Sync upstream changes to ignis-main" --body "This PR syncs the latest upstream changes from main into ignis-main." || echo "PR might already exist or no changes to merge"
+          # 2. Merge updated main into ignis-main
+          git checkout ignis-main
+          git merge main -m "Auto-sync upstream changes from main"
+          git push origin ignis-main
