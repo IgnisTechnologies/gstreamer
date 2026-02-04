@@ -1,0 +1,49 @@
+name: Sync ignis-main with upstream
+
+on:
+  schedule:
+    # Run daily at 6:00 AM UTC
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    # Allow manual trigger from GitHub UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout ignis-main
+        uses: actions/checkout@v4
+        with:
+          ref: ignis-main
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://gitlab.freedesktop.org/gstreamer/gstreamer.git
+          git fetch upstream main
+
+      - name: Rebase ignis-main onto upstream/main
+        run: |
+          git rebase upstream/main
+        continue-on-error: true
+        id: rebase
+
+      - name: Handle rebase conflicts
+        if: steps.rebase.outcome == 'failure'
+        run: |
+          echo "::error::Rebase failed due to conflicts. Manual intervention required."
+          git rebase --abort
+          exit 1
+
+      - name: Push changes
+        if: steps.rebase.outcome == 'success'
+        run: |
+          git push --force-with-lease origin ignis-main
