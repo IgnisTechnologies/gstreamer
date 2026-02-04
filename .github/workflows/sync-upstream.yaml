@@ -1,4 +1,4 @@
-name: Sync ignis-main with upstream
+name: Sync upstream-mirror with upstream
 
 on:
   schedule:
@@ -14,10 +14,9 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout ignis-main
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ignis-main
           fetch-depth: 0
 
       - name: Configure git
@@ -30,20 +29,8 @@ jobs:
           git remote add upstream https://gitlab.freedesktop.org/gstreamer/gstreamer.git
           git fetch upstream main
 
-      - name: Rebase ignis-main onto upstream/main
+      - name: Merge upstream into upstream-mirror
         run: |
-          git rebase upstream/main
-        continue-on-error: true
-        id: rebase
-
-      - name: Handle rebase conflicts
-        if: steps.rebase.outcome == 'failure'
-        run: |
-          echo "::error::Rebase failed due to conflicts. Manual intervention required."
-          git rebase --abort
-          exit 1
-
-      - name: Push changes
-        if: steps.rebase.outcome == 'success'
-        run: |
-          git push --force-with-lease origin ignis-main
+          git checkout upstream-mirror
+          git merge upstream/main -m "Sync with upstream/main"
+          git push origin upstream-mirror
