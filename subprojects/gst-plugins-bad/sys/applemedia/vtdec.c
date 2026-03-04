@@ -50,16 +50,23 @@
 #include "config.h"
 #endif
 
-#ifdef HAVE_IOS
-#include <dlfcn.h>
-#endif
 #include <string.h>
+#include "vtdec.h"
 #include <gst/gst.h>
 #include <gst/pbutils/codec-utils.h>
 #include <gst/video/video.h>
 #include <gst/video/gstvideodecoder.h>
 #include <gst/gl/gstglcontext.h>
-#include "vtdec.h"
+
+#if TARGET_OS_OSX || TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_VISION
+#define HAVE_SUPPLEMENTAL
+#if (TARGET_OS_OSX && __MAC_OS_X_VERSION_MAX_ALLOWED >= 110000) || (TARGET_OS_IOS && __IPHONE_OS_VERSION_MAX_ALLOWED >= 260200) || (TARGET_OS_TV && __TV_OS_VERSION_MAX_ALLOWED >= 260200) || (TARGET_OS_VISION && __VISION_OS_VERSION_MAX_ALLOWED >= 260200)
+#define HAVE_SUPPLEMENTAL_DEFINITION
+#else
+#include <dlfcn.h>
+#endif
+#endif
+
 #include "vtutil.h"
 #include "helpers.h"
 #include "corevideobuffer.h"
@@ -335,7 +342,7 @@ gst_vtdec_output_loop (GstVtdec * vtdec)
   GstVideoDecoder *decoder = GST_VIDEO_DECODER (vtdec);
 
   g_mutex_lock (&vtdec->queue_mutex);
-  while (gst_vec_deque_is_empty (vtdec->reorder_queue)
+  while (gst_vec_deque_get_length (vtdec->reorder_queue) <= vtdec->dbp_size
       && !vtdec->pause_task && !vtdec->is_flushing && !vtdec->is_draining) {
     g_cond_wait (&vtdec->queue_cond, &vtdec->queue_mutex);
   }
@@ -352,7 +359,7 @@ gst_vtdec_output_loop (GstVtdec * vtdec)
 
   /* push a buffer if there are enough frames to guarantee
    * that we push in PTS order, or if we're draining/flushing */
-  while ((gst_vec_deque_get_length (vtdec->reorder_queue) >=
+  while ((gst_vec_deque_get_length (vtdec->reorder_queue) >
           vtdec->dbp_size) || vtdec->is_flushing || vtdec->is_draining) {
     gboolean is_flushing;
 
@@ -406,6 +413,7 @@ gst_vtdec_output_loop (GstVtdec * vtdec)
       gst_video_decoder_release_frame (decoder, frame);
     }
 
+    /* Don't consider the FLUSHING ret an error if something flagged is_flushing in the meantime */
     if (vtdec->is_flushing && ret == GST_FLOW_FLUSHING) {
       ret = GST_FLOW_OK;
     }
@@ -622,17 +630,20 @@ gst_vtdec_negotiate (GstVideoDecoder * decoder)
   output_state->caps = gst_video_info_to_caps (&output_state->info);
   if (features) {
     gst_caps_set_features (output_state->caps, 0, features);
+
+#if TARGET_OS_OSX || TARGET_OS_IOS || TARGET_OS_TV
     output_textures =
         gst_caps_features_contains (features,
         GST_CAPS_FEATURE_MEMORY_GL_MEMORY);
     if (output_textures)
       gst_caps_set_simple (output_state->caps, "texture-target", G_TYPE_STRING,
-#ifndef HAVE_IOS
+#if TARGET_OS_OSX
           GST_GL_TEXTURE_TARGET_RECTANGLE_STR,
 #else
           GST_GL_TEXTURE_TARGET_2D_STR,
 #endif
           NULL);
+#endif
 
 #if defined(APPLEMEDIA_MOLTENVK)
     output_vulkan =
@@ -671,6 +682,7 @@ gst_vtdec_negotiate (GstVideoDecoder * decoder)
       GST_INFO_OBJECT (vtdec, "no need to recreate VT session for this change");
     }
   }
+  gst_video_codec_state_unref (output_state);
 
   if (vtdec->texture_cache != NULL
       && ((GST_IS_VIDEO_TEXTURE_CACHE_GL (vtdec->texture_cache)
@@ -849,7 +861,7 @@ gst_vtdec_flush (GstVideoDecoder * decoder)
 
   vtdec->downstream_ret = GST_FLOW_OK;
 
-  return GST_FLOW_OK;
+  return TRUE;
 }
 
 static GstFlowReturn
@@ -1103,15 +1115,16 @@ gst_vtdec_create_session (GstVtdec * vtdec, GstVideoFormat format,
       CFDictionaryCreateMutable (NULL, 0, &kCFTypeDictionaryKeyCallBacks,
       &kCFTypeDictionaryValueCallBacks);
 
-  /* This is the default on iOS and the key does not exist there */
-#ifndef HAVE_IOS
-  gst_vtutil_dict_set_boolean (videoDecoderSpecification,
-      kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder,
-      enable_hardware);
-  if (enable_hardware && vtdec->require_hardware)
+#if TARGET_OS_OSX || TARGET_OS_VISION || TARGET_OS_IOS || TARGET_OS_TV
+  if (__builtin_available (macOS 10.9, iOS 17.0, tvOS 17.0, visionOS 1.0, *)) {
     gst_vtutil_dict_set_boolean (videoDecoderSpecification,
-        kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
-        TRUE);
+        kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder,
+        enable_hardware);
+    if (enable_hardware && vtdec->require_hardware)
+      gst_vtutil_dict_set_boolean (videoDecoderSpecification,
+          kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
+          TRUE);
+  }
 #endif
 
   output_image_buffer_attrs =
@@ -1282,9 +1295,10 @@ cm_block_buffer_freeblock (void *refCon, void *doomedMemoryBlock,
     size_t sizeInBytes)
 {
   GstMapInfo *info = (GstMapInfo *) refCon;
+  GstMemory *mem = info->memory;
 
-  gst_memory_unmap (info->memory, info);
-  gst_memory_unref (info->memory);
+  gst_memory_unmap (mem, info);
+  gst_memory_unref (mem);
   g_slice_free (GstMapInfo, info);
 }
 
@@ -1442,7 +1456,7 @@ gst_vtdec_session_output_callback (void *decompression_output_ref_con,
         GST_DEBUG_OBJECT (vtdec, "ReferenceMissingErr when decoding frame %d",
             frame->decode_frame_number);
         break;
-#ifndef HAVE_IOS
+#if TARGET_OS_OSX
       case codecBadDataErr:    /* SW decoder on macOS uses a different code from the hardware one... */
 #endif
       case kVTVideoDecoderBadDataErr:
@@ -1527,8 +1541,13 @@ gst_vtdec_drain_decoder (GstVideoDecoder * decoder, gboolean flush)
 
   /* Only early-return here if we're draining (as that needs to output frames).
    * Flushing doesn't care about errors from downstream. */
-  if (!flush && vtdec->downstream_ret != GST_FLOW_OK
-      && vtdec->downstream_ret != GST_FLOW_FLUSHING) {
+  if (!flush && vtdec->downstream_ret != GST_FLOW_OK) {
+    /* Makes sure the output callback won't get stuck waiting for space in the queue */
+    g_mutex_lock (&vtdec->queue_mutex);
+    vtdec->is_flushing = TRUE;
+    g_cond_signal (&vtdec->queue_cond);
+    g_mutex_unlock (&vtdec->queue_mutex);
+
     GST_WARNING_OBJECT (vtdec, "Output loop stopped with error (%s), leaving",
         gst_flow_get_name (vtdec->downstream_ret));
     return vtdec->downstream_ret;
@@ -1823,14 +1842,14 @@ gst_vtdec_check_vp9_support (GstVtdec * vtdec)
 
   GST_DEBUG_OBJECT (vtdec, "Checking VP9 VideoToolbox support");
 
-#if !defined(HAVE_IOS) || (defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 260200)
-  if (__builtin_available (macos 11.0, ios 26.2, *)) {
+#ifdef HAVE_SUPPLEMENTAL
+#ifdef HAVE_SUPPLEMENTAL_DEFINITION
+  if (__builtin_available (macOS 11.0, iOS 26.2, tvOS 26.2, visionOS 26.2, *)) {
     VTRegisterSupplementalVideoDecoderIfAvailable (kCMVideoCodecType_VP9);
   }
 #else
-  /* FIXME: Temporary measure until Xcode on CI has a SDK version that has the
-   * variant that introduces VTRegisterSupplementalVideoDecoderIfAvailable on
-   * iOS 26.2.
+  /* Needed temporarily till we can require a new-enough Xcode that has
+   * VTRegisterSupplementalVideoDecoderIfAvailable on iOS, tvOS, visionOS 26.2
    */
   VTRegisterSupplementalVideoDecoderIfAvailableFunc func =
       (VTRegisterSupplementalVideoDecoderIfAvailableFunc)
@@ -1840,13 +1859,14 @@ gst_vtdec_check_vp9_support (GstVtdec * vtdec)
     func (kCMVideoCodecType_VP9);
   }
 #endif
+#endif
 
   vp9_supported = VTIsHardwareDecodeSupported (kCMVideoCodecType_VP9);
 
   if (vp9_supported) {
     GST_INFO_OBJECT (vtdec, "VP9 hardware decoding is supported");
   } else {
-    GST_WARNING_OBJECT (vtdec,
+    GST_INFO_OBJECT (vtdec,
         "VP9 hardware decoding is not supported on this system");
   }
 
@@ -1860,15 +1880,14 @@ gst_vtdec_check_av1_support (GstVtdec * vtdec)
 
   GST_DEBUG_OBJECT (vtdec, "Checking AV1 VideoToolbox support");
 
-
-#if !defined(HAVE_IOS) || (defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 260200)
-  if (__builtin_available (macos 11.0, ios 26.2, *)) {
+#ifdef HAVE_SUPPLEMENTAL
+#ifdef HAVE_SUPPLEMENTAL_DEFINITION
+  if (__builtin_available (macOS 11.0, iOS 26.2, tvOS 26.2, visionOS 26.2, *)) {
     VTRegisterSupplementalVideoDecoderIfAvailable (kCMVideoCodecType_AV1);
   }
 #else
-  /* FIXME: Temporary measure until Xcode on CI has a SDK version that has the
-   * variant that introduces VTRegisterSupplementalVideoDecoderIfAvailable on
-   * iOS 26.2.
+  /* Needed temporarily till we can require a new-enough Xcode that has
+   * VTRegisterSupplementalVideoDecoderIfAvailable on iOS, tvOS, visionOS 26.2
    */
   VTRegisterSupplementalVideoDecoderIfAvailableFunc func =
       (VTRegisterSupplementalVideoDecoderIfAvailableFunc)
@@ -1879,6 +1898,7 @@ gst_vtdec_check_av1_support (GstVtdec * vtdec)
     func (kCMVideoCodecType_AV1);
   }
 #endif
+#endif
 
   /* Check if hardware decode is supported for AV1 */
   av1_supported = VTIsHardwareDecodeSupported (kCMVideoCodecType_AV1);
@@ -1886,7 +1906,7 @@ gst_vtdec_check_av1_support (GstVtdec * vtdec)
   if (av1_supported) {
     GST_INFO_OBJECT (vtdec, "AV1 hardware decoding is supported");
   } else {
-    GST_WARNING_OBJECT (vtdec,
+    GST_INFO_OBJECT (vtdec,
         "AV1 hardware decoding is not supported on this system");
   }
 
@@ -1896,6 +1916,8 @@ gst_vtdec_check_av1_support (GstVtdec * vtdec)
 static GstCaps *
 gst_vtdec_getcaps (GstVideoDecoder * decoder, GstCaps * filter)
 {
+  static gsize av1_once = 0;
+  static gsize vp9_once = 0;
   GstVtdec *vtdec = GST_VTDEC (decoder);
   GstCaps *sinkcaps, *result;
 
@@ -1907,10 +1929,24 @@ gst_vtdec_getcaps (GstVideoDecoder * decoder, GstCaps * filter)
   for (guint i = 0; i < n;) {
     GstStructure *s = gst_caps_get_structure (sinkcaps, i);
 
+    if (gst_structure_has_name (s, "video/x-av1")) {
+      if (g_once_init_enter (&av1_once)) {
+        if (gst_vtdec_check_av1_support (vtdec))
+          vtdec->codec_support |= Av1Supported;
+        g_once_init_leave (&av1_once, Av1Supported);
+      }
+    } else if (gst_structure_has_name (s, "video/x-vp9")) {
+      if (g_once_init_enter (&vp9_once)) {
+        if (gst_vtdec_check_vp9_support (vtdec))
+          vtdec->codec_support |= Vp9Supported;
+        g_once_init_leave (&vp9_once, Vp9Supported);
+      }
+    }
+
     if ((gst_structure_has_name (s, "video/x-av1")
-            && !gst_vtdec_check_av1_support (vtdec))
+            && !(vtdec->codec_support & Av1Supported))
         || (gst_structure_has_name (s, "video/x-vp9")
-            && !gst_vtdec_check_vp9_support (vtdec))) {
+            && !(vtdec->codec_support & Vp9Supported))) {
       gst_caps_remove_structure (sinkcaps, i);
       n--;
     } else {
@@ -2016,7 +2052,6 @@ gst_vtdec_set_context (GstElement * element, GstContext * context)
   GST_ELEMENT_CLASS (gst_vtdec_parent_class)->set_context (element, context);
 }
 
-#ifndef HAVE_IOS
 #define GST_TYPE_VTDEC_HW   (gst_vtdec_hw_get_type())
 #define GST_VTDEC_HW(obj)   (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_VTDEC_HW,GstVtdecHw))
 #define GST_VTDEC_HW_CLASS(klass)   (G_TYPE_CHECK_CLASS_CAST((klass),GST_TYPE_VTDEC_HW,GstVtdecHwClass))
@@ -2047,19 +2082,64 @@ gst_vtdec_hw_init (GstVtdecHw * vtdec)
   GST_VTDEC (vtdec)->require_hardware = TRUE;
 }
 
+static void
+gst_vtdec_init_once (void)
+{
+  static gsize init_once = 0;
+
+  if (g_once_init_enter (&init_once)) {
+    gst_applemedia_init_once ();
+    GST_DEBUG_CATEGORY_INIT (gst_vtdec_debug_category, "vtdec", 0,
+        "debug category for vtdec element");
+    g_once_init_leave (&init_once, 1);
+  }
+}
+
+
+static gboolean
+gst_vtdec_register_vtdec (GstPlugin * plugin)
+{
+  gint rank = GST_RANK_PRIMARY;
+
+  gst_vtdec_init_once ();
+
+#if !TARGET_OS_WATCH
+  if (__builtin_available (macOS 10.9, iOS 17.0, tvOS 17.0, visionOS 1.0, *))
+    rank = GST_RANK_SECONDARY;
 #endif
 
-void
+  return gst_element_register (plugin, "vtdec", rank, GST_TYPE_VTDEC);
+}
+
+#if !TARGET_OS_WATCH
+static gboolean
+gst_vtdec_register_vtdec_hw (GstPlugin * plugin)
+{
+  gst_vtdec_init_once ();
+
+  if (__builtin_available (macOS 10.9, iOS 17.0, tvOS 17.0, visionOS 1.0, *)) {
+    return gst_element_register (plugin, "vtdec_hw", GST_RANK_PRIMARY + 1,
+        GST_TYPE_VTDEC_HW);
+  }
+
+  return TRUE;
+}
+#endif
+
+GST_ELEMENT_REGISTER_DEFINE_CUSTOM (vtdec, gst_vtdec_register_vtdec);
+#if !TARGET_OS_WATCH
+GST_ELEMENT_REGISTER_DEFINE_CUSTOM (vtdec_hw, gst_vtdec_register_vtdec_hw);
+#endif
+
+gboolean
 gst_vtdec_register_elements (GstPlugin * plugin)
 {
-  GST_DEBUG_CATEGORY_INIT (gst_vtdec_debug_category, "vtdec", 0,
-      "debug category for vtdec element");
+  gboolean ret = FALSE;
 
-#ifdef HAVE_IOS
-  gst_element_register (plugin, "vtdec", GST_RANK_PRIMARY, GST_TYPE_VTDEC);
-#else
-  gst_element_register (plugin, "vtdec_hw", GST_RANK_PRIMARY + 1,
-      GST_TYPE_VTDEC_HW);
-  gst_element_register (plugin, "vtdec", GST_RANK_SECONDARY, GST_TYPE_VTDEC);
+#if !TARGET_OS_WATCH
+  ret |= GST_ELEMENT_REGISTER (vtdec_hw, plugin);
 #endif
+  ret |= GST_ELEMENT_REGISTER (vtdec, plugin);
+
+  return ret;
 }

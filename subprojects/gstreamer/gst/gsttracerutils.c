@@ -59,7 +59,7 @@ static const gchar *_quark_strings[] = {
   "pad-chain-pre", "pad-chain-post", "pad-chain-list-pre",
   "pad-chain-list-post", "pad-send-event-pre", "pad-send-event-post",
   "memory-init", "memory-free-pre", "memory-free-post",
-  "pool-buffer-queued", "pool-buffer-dequeued",
+  "pool-buffer-queued", "pool-buffer-dequeued", "object-parent-set",
 
 
   "none",                       /* This is a special quark for no hook - should always be LAST */
@@ -192,6 +192,18 @@ gst_tracer_utils_create_tracer (GstTracerFactory * factory, const gchar * name,
               ("Can't instantiate `%s` tracer: invalid property '%s' value: '%s'\n  %s\n",
               name, field_name, g_value_get_string (field_value),
               available_props);
+          goto done;
+        }
+      } else if (g_value_type_transformable (G_VALUE_TYPE (field_value),
+              pspec->value_type)) {
+        names[i] = field_name;
+        g_value_init (&values[i], pspec->value_type);
+        if (!g_value_transform (field_value, &values[i])) {
+          available_props = list_available_tracer_properties (gobject_class);
+          g_warning
+              ("Can't instantiate `%s` tracer: failed to convert property '%s' from %s to %s\n  %s\n",
+              name, field_name, g_type_name (G_VALUE_TYPE (field_value)),
+              g_type_name (pspec->value_type), available_props);
           goto done;
         }
       } else {

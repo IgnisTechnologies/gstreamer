@@ -1,4 +1,4 @@
-set-globals, media_file="$(test_dir)/../../medias/defaults/ogg/audio_5.1_separated_frequencies.ogg"
+set-globals, media_file="$(test_dir)/../../media/defaults/ogg/audio_5.1_separated_frequencies.ogg"
 meta,
     tool = "ges-launch-$(gst_api_version)",
     handles-states=true,
@@ -10,7 +10,7 @@ meta,
         --audiosink, "$(audiosink) name=audiosink",
     },
     configs = {
-        "$(validateflow), pad=audiosink:sink, buffers-checksum=true, ignored-fields=\"stream-start={stream-id,group-id,stream}\"",
+        [validateflow, pad=audiosink:sink, buffers-checksum=true, ignored-fields="stream-start={stream-id,group-id,stream}"],
     }
 
 # Add a 5.1 audio clip with forced default order (gst)

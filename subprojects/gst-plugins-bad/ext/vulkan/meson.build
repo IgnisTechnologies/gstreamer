@@ -33,6 +33,7 @@ glsc_sources = [
 ]
 
 video_sources = [
+  'base/gsth26xgopmapper.c',
   'base/gsth264encoder.c',
   'gstvkvideocaps.c',
   'vkav1dec.c',
@@ -103,6 +104,7 @@ gstvulkan_plugin = library('gstvulkan',
   objc_args : gst_plugins_bad_args,
   link_args : noseh_link_args,
   include_directories : [configinc],
+  kwargs: vulkan_plugin_kwargs,
   dependencies : [gstvideo_dep, gstbase_dep, gstvulkan_dep, vulkan_dep, gio_dep] + extra_deps,
   install : true,
   install_dir : plugins_install_dir,

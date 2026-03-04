@@ -3,6 +3,7 @@ qt6_sources = [
   'gstqt6element.cc',
   'gstqsg6material.cc',
   'gstqt6glutility.cc',
+  'gstqt6navigation.cc',
   'gstqml6glsink.cc',
   'gstqml6glsrc.cc',
   'gstqml6glmixer.cc',
@@ -18,6 +19,7 @@ qt6_headers = [
   'gstqt6elements.h',
   'qt6glrenderer.h',
   'gstqt6glutility.h',
+  'gstqt6navigation.h',
   'qt6glitem.h',
   'gstqt6gl.h',
   'gstqsg6material.h',
@@ -85,8 +87,8 @@ if not have_tools
   subdir_done()
 endif
 
-qt6qml_dep = dependency('qt6', modules : ['Core', 'Gui', 'Qml', 'Quick'],
-                        method: qt6_method, required: qt6_option, static: host_system == 'ios', private_headers: true)
+qt6qml_dep = dependency('qt6', modules : ['Core', 'Gui', 'Qml', 'Quick', 'Test'], private_headers: true,
+                        method: qt6_method, required: qt6_option, static: subsystem.startswith('ios'))
 if not qt6qml_dep.found()
   subdir_done()
 endif
@@ -98,10 +100,17 @@ if not qsb.found()
 endif
 qsb_wrapper = find_program('qsb-wrapper.py')
 
+xkbcommon_dep = dependency('xkbcommon', required: false)
+
 optional_deps = []
 qt_defines = []
 have_qpa_include = false
 have_qt_windowing = false
+
+if xkbcommon_dep.found()
+  qt_defines += ['-DHAVE_XKBCOMMON']
+  optional_deps += xkbcommon_dep
+endif
 
 # Look for the QPA platform native interface header
 qpa_header_path = join_paths(qt6qml_dep.version(), 'QtGui')
@@ -172,7 +181,7 @@ if host_system == 'windows'
 endif
 
 # macOS windowing
-if host_system == 'darwin'
+if subsystem == 'macos'
   qt6_macos = qt6_option \
       .require(gst_gl_have_window_cocoa, error_message: 'cocoa windowing support in gstreamer-gl is required') \
       .require(gst_gl_have_platform_cgl, error_message: 'cgl platform support in gstreamer-gl is required')
@@ -183,7 +192,8 @@ if host_system == 'darwin'
 endif
 
 # iOS windowing
-if host_system == 'ios'
+# TODO: tvOS?
+if subsystem.startswith('ios')
   qt6_ios = qt6_option \
       .require(gst_gl_have_window_eagl, error_message: 'eagl windowing support in gstreamer-gl is required') \
       .require(gst_gl_have_platform_eagl, error_message: 'eagl platform support in gstreamer-gl is required')
@@ -226,7 +236,7 @@ if qt6_option.require(have_qt_windowing, error_message: 'No windowing, enable on
   qresources = qt6_mod.compile_resources(sources: resource_file, method: qt6_method)
 
   qml6gl_kwargs = {}
-  if host_system == 'darwin'
+  if subsystem == 'macos'
     fs = import('fs')
     qt_bindir = fs.parent(find_program('qmake6').full_path())
     qt_libdir = fs.parent(qt_bindir) / 'lib'

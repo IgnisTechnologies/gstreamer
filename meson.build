@@ -14,6 +14,16 @@ host_system = host_machine.system()
 build_system = build_machine.system()
 cc = meson.get_compiler('c')
 
+# Check Xcode version on macOS and enforce meson >= 1.8.3 for Xcode 26+
+# Xcode 26+ ships with Apple Clang 17.0.0 based on LLVM 19
+# which deprecated _LIBCPP_ENABLE_ASSERTIONS. Older meson versions have issues with this.
+if build_system == 'darwin'
+  xcodebuild = find_program('xcodebuild', required: false, version_argument: '-version')
+  if xcodebuild.found() and xcodebuild.version().version_compare('>= 26.0') and not meson.version().version_compare('>= 1.8.3')
+    error('Xcode >= 26.0 requires meson >= 1.8.3, found meson @0@. Please upgrade meson.'.format(meson.version()))
+  endif
+endif
+
 fs = import('fs')
 gnome = import('gnome')
 pkgconfig = import('pkgconfig')
@@ -669,25 +679,8 @@ endif
 
 message('Building subprojects: ' + ', '.join(subprojects_names))
 
-setenv = find_program('gst-env.py')
-
-devenv_cmd = [setenv, '--builddir=@0@'.format(meson.global_build_root()),
-              '--srcdir=@0@'.format(meson.global_source_root())]
-
 subdir('tests')
 subdir('ci/fuzzing')
-
-if meson.can_run_host_binaries() and build_machine.system() == 'linux' and host_machine.system() == 'windows'
-  # FIXME: Ideally we could get the wrapper directly from meson
-  devenv_cmd += ['--wine', host_machine.cpu_family() == 'x86_64' ? 'wine64' : 'wine32']
-  sysroot = meson.get_cross_property('sys_root')
-  if sysroot != ''
-    # Logic from meson
-    devenv_cmd += ['--winepath', 'Z:' + join_paths(sysroot, 'bin')]
-  endif
-endif
-
-run_target('devenv', command : devenv_cmd)
 
 if orc_subproject.found() and orc_update_targets.length() > 0
   alias_target('update-orc-dist', orc_update_targets)

@@ -78,6 +78,7 @@ static const QtNodeType qt_node_types[] = {
   {FOURCC_co64, "64-bit chunk offset", 0,
       qtdemux_dump_co64},
   {FOURCC_vide, "video media", 0},
+  {FOURCC_pict, "image media", 0},
   {FOURCC_cmov, "compressed movie", QT_FLAG_CONTAINER},
   {FOURCC_dcom, "compressed data", 0, qtdemux_dump_dcom},
   {FOURCC_cmvd, "compressed movie data", 0, qtdemux_dump_cmvd},
@@ -261,6 +262,11 @@ static const QtNodeType qt_node_types[] = {
   {FOURCC_mha1, "MPEG-H 3D Audio sample entry (mha1)", 0},
   {FOURCC_mhm1, "MPEG-H 3D Audio sample entry (mhm1)", 0},
   {FOURCC_mhaC, "MPEG-H 3D Audio Configuration Box", 0, qtdemux_dump_mhaC},
+  {FOURCC_uncv, "Uncompressed Video Sample Entry", 0},
+  {FOURCC_uncC, "Uncompressed Frame Configuration Box", 0},
+  {FOURCC_cpat, "Component Pattern Definition Box", 0},
+  {FOURCC_cmpd, "Component Definition Box", 0},
+  {FOURCC_ccst, "Coding Constraints", 0, qtdemux_dump_ccst},
   {0, "unknown", 0,},
 };
 
