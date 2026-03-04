@@ -70,7 +70,8 @@ const VkComponentMapping _vk_identity_component_map = {
 
 gboolean
 gst_vulkan_video_get_vk_functions (GstVulkanDevice * device,
-    GstVulkanVideoFunctions * vk_funcs)
+    GstVulkanVideoFunctions * vk_funcs,
+    VkVideoCodecOperationFlagBitsKHR codec_op)
 {
   gboolean ret = FALSE;
   GstVulkanInstance *instance;
@@ -91,8 +92,16 @@ gst_vulkan_video_get_vk_functions (GstVulkanDevice * device,
   } G_STMT_END;
 #define GET_DEVICE_PROC_ADDRESS_REQUIRED(name) GET_PROC_ADDRESS_REQUIRED(name, device)
 #define GET_INSTANCE_PROC_ADDRESS_REQUIRED(name) GET_PROC_ADDRESS_REQUIRED(name, instance)
-  GST_VULKAN_DEVICE_VIDEO_FN_LIST (GET_DEVICE_PROC_ADDRESS_REQUIRED);
-  GST_VULKAN_INSTANCE_VIDEO_FN_LIST (GET_INSTANCE_PROC_ADDRESS_REQUIRED);
+  GST_VULKAN_DEVICE_VIDEO_FN_LIST_COMMON (GET_DEVICE_PROC_ADDRESS_REQUIRED);
+
+  if (GST_VULKAN_VIDEO_CODEC_OPERATION_IS_DECODE (codec_op))
+    GST_VULKAN_DEVICE_VIDEO_FN_LIST_DECODE (GET_DEVICE_PROC_ADDRESS_REQUIRED);
+
+  if (GST_VULKAN_VIDEO_CODEC_OPERATION_IS_ENCODE (codec_op)) {
+    GST_VULKAN_DEVICE_VIDEO_FN_LIST_ENCODE (GET_DEVICE_PROC_ADDRESS_REQUIRED);
+    GST_VULKAN_INSTANCE_VIDEO_FN_LIST_ENCODE
+        (GET_INSTANCE_PROC_ADDRESS_REQUIRED);
+  }
 #undef GET_DEVICE_PROC_ADDRESS_REQUIRED
 #undef GET_INSTANCE_PROC_ADDRESS_REQUIRED
 #undef GET_PROC_ADDRESS_REQUIRED
@@ -393,8 +402,6 @@ gst_vulkan_video_try_configuration (GstVulkanPhysicalDevice * device,
 
   /* fill vkcaps & output format usage */
   if (decode) {
-    gboolean dedicated_dpb;
-
     vkcaps.caps.pNext = &vkcaps.decoder;
     /* *INDENT-OFF* */
     vkcaps.decoder.caps = (VkVideoDecodeCapabilitiesKHR) {
@@ -402,14 +409,6 @@ gst_vulkan_video_try_configuration (GstVulkanPhysicalDevice * device,
       .pNext = &vkcaps.decoder.codec,
     };
     /* *INDENT-ON* */
-
-    dedicated_dpb = ((vkcaps.decoder.caps.flags &
-            VK_VIDEO_DECODE_CAPABILITY_DPB_AND_OUTPUT_COINCIDE_BIT_KHR) == 0);
-
-    image_usage = VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR
-        | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (!dedicated_dpb)
-      image_usage |= VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR;
   } else if (encode) {
     vkcaps.caps.pNext = &vkcaps.encoder;
     /* *INDENT-OFF* */
@@ -418,9 +417,6 @@ gst_vulkan_video_try_configuration (GstVulkanPhysicalDevice * device,
       .pNext = &vkcaps.encoder.codec,
     };
     /* *INDENT-ON* */
-
-    image_usage = VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR
-        | VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR;
   } else {
     g_assert_not_reached ();
   }
@@ -482,6 +478,21 @@ gst_vulkan_video_try_configuration (GstVulkanPhysicalDevice * device,
   if (!gst_vulkan_physical_device_get_video_capabilities (device,
           &profile->profile, &vkcaps.caps, error))
     return FALSE;
+
+  if (decode) {
+    gboolean dedicated_dpb;
+
+    image_usage = VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR
+        | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+    dedicated_dpb = ((vkcaps.decoder.caps.flags &
+            VK_VIDEO_DECODE_CAPABILITY_DPB_AND_OUTPUT_COINCIDE_BIT_KHR) == 0);
+    if (!dedicated_dpb)
+      image_usage |= VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR;
+  } else {
+    image_usage = VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR
+        | VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR;
+  }
 
   fmts =
       gst_vulkan_physical_device_get_video_formats (device, image_usage,

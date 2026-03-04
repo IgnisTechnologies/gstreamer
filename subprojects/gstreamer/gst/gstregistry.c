@@ -137,6 +137,15 @@ extern HMODULE _priv_gst_dll_handle;
 #endif
 #define GST_REGISTRY_FILE_NAME "registry." GST_REGISTRY_FILE_SUFFIX ".bin"
 
+#ifdef G_OS_WIN32
+#define GST_MODULE_SUFFIX ".dll"
+#else
+#define GST_MODULE_SUFFIX ".so"
+#ifdef __APPLE__
+#define GST_EXTRA_MODULE_SUFFIX ".dylib"
+#endif
+#endif
+
 
 #define GST_CAT_DEFAULT GST_CAT_REGISTRY
 
@@ -1221,6 +1230,15 @@ skip_directory (const gchar * parent_path, const gchar * dirent)
   if (strcmp (dirent, "gst-integration-testsuites") == 0)
     return TRUE;
 
+  /* skip the directories ending in .dSYM, these contain mach-o files with
+   * only debugging sections */
+  if (g_str_has_suffix (dirent, ".dSYM"))
+    return TRUE;
+
+  /* skip any stray directories when its parent is a .dSYM bundle */
+  if (parent_path != NULL && g_str_has_suffix (parent_path, ".dSYM"))
+    return TRUE;
+
   /* Rust build dirs which may contain artefacts we should skip, can be
    * /target/{debug,release} or /target/{arch}/{debug,release} */
   target = strstr (parent_path, "/target/");
@@ -1247,6 +1265,7 @@ skip_directory (const gchar * parent_path, const gchar * dirent)
     }
   }
 
+  /* Any non-dot directories can be indexed now */
   if (G_LIKELY (dirent[0] != '.'))
     return FALSE;
 
@@ -1258,11 +1277,6 @@ skip_directory (const gchar * parent_path, const gchar * dirent)
   /* can also skip .git and .deps dirs, those won't contain useful files.
    * This speeds up scanning a bit in development environment setups. */
   if (strcmp (dirent, ".git") == 0 || strcmp (dirent, ".deps") == 0)
-    return TRUE;
-
-  /* skip the directories ending in .dSYM, these contain mach-o files with
-   * only debugging sections */
-  if (g_str_has_suffix (dirent, ".dSYM"))
     return TRUE;
 
   return FALSE;
@@ -1319,7 +1333,7 @@ gst_registry_scan_path_level (GstRegistryScanContext * context,
       g_free (filename);
       continue;
     }
-    if (!g_str_has_suffix (dirent, "." G_MODULE_SUFFIX)
+    if (!g_str_has_suffix (dirent, GST_MODULE_SUFFIX)
 #ifdef GST_EXTRA_MODULE_SUFFIX
         && !g_str_has_suffix (dirent, GST_EXTRA_MODULE_SUFFIX)
 #endif

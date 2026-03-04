@@ -20463,7 +20463,7 @@
                         "construct": true,
                         "construct-only": false,
                         "controllable": false,
-                        "default": "rp188any (3)",
+                        "default": "rp188vitc1 (0)",
                         "mutable": "null",
                         "readable": true,
                         "type": "GstDecklinkTimecodeFormat",
@@ -250268,6 +250268,18 @@
                     }
                 },
                 "properties": {
+                    "ancillary-meta-locations": {
+                        "blurb": "Locations to use for ancillary meta",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "NULL",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "gchararray",
+                        "writable": true
+                    },
                     "auto-resync": {
                         "blurb": "If true resync last known timecode from upstream, otherwise only count up from the last known one",
                         "conditionally-available": false,
@@ -250528,6 +250540,11 @@
                         "desc": "Buffer running time as timecode",
                         "name": "running-time",
                         "value": "6"
+                    },
+                    {
+                        "desc": "Ancillary meta in ST12-2 or ST12-3 format",
+                        "name": "ancillary-meta",
+                        "value": "7"
                     }
                 ]
             }

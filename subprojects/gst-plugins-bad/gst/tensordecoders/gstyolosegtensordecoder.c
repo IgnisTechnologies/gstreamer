@@ -37,10 +37,10 @@
  * gst-launch-1.0 v4l2src device=/dev/video4 ! videorate max-rate=3 \
  *  ! videoconvertscale ! video/x-raw, pixel-aspect-ratio=1/1 \
  *  ! onnxinference \
- *    model-file=/home/dmorin/repos/onnx-models/models/yolov8s-seg.onnx \
+ *    model-file=/path/to/file \
  *  ! yolosegv8tensordec class-confidence-threshold=0.8 iou-threshold=0.3 \
  *    max-detections=100 \
- *    label-file=/home/dmorin/repos/onnx-models/labels/COCO_classes.txt \
+ *    label-file=/onnx-models/labels/COCO_classes.txt \
  *  ! segmentationoverlay \
  *  ! glimagesink sink="gtkglsink processing-deadline=300000000
  *
@@ -217,14 +217,14 @@ gst_yolo_seg_tensor_decoder_get_tensors (GstYoloSegTensorDecoder * self,
 
     *logits_tensor = gst_tensor_meta_get_typed_tensor (tmeta,
         YOLO_SEGMENTATION_LOGITS_TENSOR_ID, GST_TENSOR_DATA_TYPE_FLOAT32,
-        GST_TENSOR_DIM_ORDER_ROW_MAJOR, YOLO_LOGITS_TENSOR_N_DIMS, logits_dims);
+        GST_TENSOR_DIM_ORDER_COL_MAJOR, YOLO_LOGITS_TENSOR_N_DIMS, logits_dims);
     if (*logits_tensor == NULL)
       continue;
 
 
     *detections_tensor = gst_tensor_meta_get_typed_tensor (tmeta,
         YOLO_SEGMENTATION_DETECTION_MASK_ID, GST_TENSOR_DATA_TYPE_FLOAT32,
-        GST_TENSOR_DIM_ORDER_ROW_MAJOR, YOLO_DETECTIONS_TENSOR_N_DIMS,
+        GST_TENSOR_DIM_ORDER_COL_MAJOR, YOLO_DETECTIONS_TENSOR_N_DIMS,
         detections_dims);
 
     if (*detections_tensor == NULL)
