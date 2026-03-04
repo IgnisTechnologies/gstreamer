@@ -10,22 +10,20 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.IGNISBOT_GH_ACCESS_TOKEN }}
 
       - name: Configure git
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "ignisbot"
+          git config user.email "ignisbot@users.noreply.github.com"
 
-      - name: Pull upstream changes into main
+      - name: Sync main with upstream
         run: |
           git checkout main
           git pull https://github.com/GStreamer/gstreamer.git main
@@ -33,6 +31,9 @@ jobs:
 
       - name: Create Pull Request to ignis-main
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.IGNISBOT_GH_ACCESS_TOKEN }}
         run: |
-          gh pr create --base ignis-main --head main --title "Sync upstream changes to ignis-main" --body "This PR syncs the latest upstream changes from main into ignis-main." || echo "PR might already exist or no changes to merge"
+          gh pr create --base ignis-main --head main \
+            --title "Sync upstream changes to ignis-main" \
+            --body "This PR syncs the latest upstream changes from main into ignis-main." \
+            || echo "PR already exists or no changes to merge"
