@@ -447,17 +447,17 @@ _udmabuf_upload_transform_caps (gpointer impl, GstGLContext * context,
     GstPadDirection direction, GstCaps * caps)
 {
   struct UdmabufUpload *upload = impl;
-  GstCaps *out_caps = NULL;
+  GstCaps *intersected_caps = NULL, *out_caps = NULL;
+  GstCapsFeatures *passthrough;
 
   if (upload->disabled)
     return NULL;
 
+  passthrough = gst_caps_features_from_string
+      (GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION);
+
   if (direction == GST_PAD_SINK) {
-    GstCapsFeatures *passthrough =
-        gst_caps_features_from_string
-        (GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION);
     GstCaps *static_caps;
-    GstCaps *intersected_caps;
     GstCaps *tmp;
     guint n;
 
@@ -467,8 +467,6 @@ _udmabuf_upload_transform_caps (gpointer impl, GstGLContext * context,
     gst_caps_unref (static_caps);
 
     if (gst_caps_is_empty (intersected_caps)) {
-      gst_caps_unref (intersected_caps);
-      gst_caps_features_free (passthrough);
       goto out;
     }
 
@@ -564,15 +562,9 @@ _udmabuf_upload_transform_caps (gpointer impl, GstGLContext * context,
       gst_caps_append_structure_full (out_caps, structure,
           gst_caps_features_copy (features));
     }
-
-    gst_caps_unref (intersected_caps);
-    gst_caps_features_free (passthrough);
   } else {
-    GstCapsFeatures *passthrough =
-        gst_caps_features_from_string
-        (GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION);
     GstCaps *static_caps;
-    GstCaps *intersected_caps, *tmp;
+    GstCaps *tmp;
     guint n;
 
     static_caps = gst_static_caps_get (&_udmabuf_upload_src_caps);
@@ -581,7 +573,6 @@ _udmabuf_upload_transform_caps (gpointer impl, GstGLContext * context,
     gst_caps_unref (static_caps);
 
     if (gst_caps_is_empty (intersected_caps)) {
-      gst_caps_unref (intersected_caps);
       goto out;
     }
 
@@ -679,12 +670,12 @@ _udmabuf_upload_transform_caps (gpointer impl, GstGLContext * context,
       gst_caps_append_structure_full (out_caps, structure,
           gst_caps_features_copy (features));
     }
-
-    gst_caps_unref (intersected_caps);
-    gst_caps_features_free (passthrough);
   }
 
 out:
+  gst_clear_caps (&intersected_caps);
+  gst_caps_features_free (passthrough);
+
   GST_DEBUG_OBJECT (upload->upload, "direction %s, transformed\n%"
       GST_PTR_FORMAT "\ninto\n%" GST_PTR_FORMAT,
       direction == GST_PAD_SRC ? "src" : "sink", caps, out_caps);
@@ -699,8 +690,6 @@ _udmabuf_upload_accept (gpointer impl, GstBuffer * buffer,
   struct UdmabufUpload *upload = impl;
   GstCaps *static_sink_caps;
   GstCaps *static_src_caps;
-  GstCaps *common_in_caps;
-  GstCaps *common_out_caps;
   guint n_mem;
   gboolean all_mem_udmabuf = TRUE;
 
@@ -741,22 +730,13 @@ _udmabuf_upload_accept (gpointer impl, GstBuffer * buffer,
   gst_clear_caps (&upload->out_caps);
 
   static_sink_caps = gst_static_caps_get (&_udmabuf_upload_sink_caps);
-  common_in_caps = gst_caps_intersect_full (in_caps, static_sink_caps,
-      GST_CAPS_INTERSECT_FIRST);
-  gst_caps_unref (static_sink_caps);
-  if (gst_caps_is_empty (common_in_caps)) {
+  if (!gst_caps_can_intersect (in_caps, static_sink_caps)) {
     GST_DEBUG_OBJECT (upload->upload, "No common caps with upstream");
-    gst_caps_unref (common_in_caps);
     return FALSE;
   }
 
   static_src_caps = gst_static_caps_get (&_udmabuf_upload_src_caps);
-  common_out_caps = gst_caps_intersect_full (out_caps, static_src_caps,
-      GST_CAPS_INTERSECT_FIRST);
-  gst_caps_unref (static_src_caps);
-  if (gst_caps_is_empty (common_out_caps)) {
-    gst_caps_unref (common_in_caps);
-    gst_caps_unref (common_out_caps);
+  if (!gst_caps_can_intersect (out_caps, static_src_caps)) {
     GST_DEBUG_OBJECT (upload->upload, "No common caps with downstream");
     return FALSE;
   }
@@ -1300,6 +1280,10 @@ _dma_buf_filter_egl_supported_formats (GstGLContext * context,
   GstVideoFormat gst_format;
   guint32 fourcc;
 
+  /* Until we have a context, simply assume all formats are supported */
+  if (!context)
+    return TRUE;
+
   all_formats = gst_structure_get_value (structure, "format");
   if (!all_formats)
     return FALSE;
@@ -1314,8 +1298,7 @@ _dma_buf_filter_egl_supported_formats (GstGLContext * context,
     if (fourcc == DRM_FORMAT_INVALID)
       return FALSE;
 
-    if (context &&
-        !gst_gl_context_egl_format_supports_modifier (context, fourcc,
+    if (!gst_gl_context_egl_format_supports_modifier (context, fourcc,
             DRM_FORMAT_MOD_LINEAR, include_external))
       return FALSE;
 
@@ -1337,8 +1320,7 @@ _dma_buf_filter_egl_supported_formats (GstGLContext * context,
       if (fourcc == DRM_FORMAT_INVALID)
         continue;
 
-      if (context &&
-          !gst_gl_context_egl_format_supports_modifier (context, fourcc,
+      if (!gst_gl_context_egl_format_supports_modifier (context, fourcc,
               DRM_FORMAT_MOD_LINEAR, include_external))
         continue;
 
@@ -1519,6 +1501,19 @@ _dma_buf_upload_transform_caps (gpointer impl, GstGLContext * context,
     }
     if (tmp)
       ret = gst_caps_merge (ret, tmp);
+
+    /* In case we don't have a context yet, we may endup linking gainst a narrow
+     * caps filter with dmabuf feature, make sure we allow linking, as this
+     * format may be supported as GLMemory with RGBA format (direct dmabuf
+     * uploads).
+     */
+    if (!ret && !context) {
+      ret = gst_caps_new_static_str_simple ("video/x-raw",
+          "format", G_TYPE_STRING, "RGBA", NULL);
+      gst_caps_set_features_simple (ret,
+          gst_caps_features_new_single_static_str
+          (GST_CAPS_FEATURE_MEMORY_GL_MEMORY));
+    }
 
     if (!ret) {
       GST_DEBUG_OBJECT (dmabuf->upload,

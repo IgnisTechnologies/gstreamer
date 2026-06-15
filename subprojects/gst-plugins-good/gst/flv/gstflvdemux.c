@@ -42,6 +42,7 @@
 #include <stdio.h>
 #include <gst/base/gstbytereader.h>
 #include <gst/base/gstbytewriter.h>
+#include <gst/pbutils/codec-utils.h>
 #include <gst/pbutils/descriptions.h>
 #include <gst/pbutils/pbutils.h>
 #include <gst/audio/audio.h>
@@ -73,7 +74,8 @@ GST_DEBUG_CATEGORY_EXTERN (flvdemux_debug);
         video/x-vp6-flash; " "video/x-vp6-alpha; \
         video/x-h264, stream-format=avc;"
 
-#define FLV_ENHANCED_VIDEO_CAPS "video/x-h265, stream-format=(string)hvc1, alignment=(string)au;"
+#define FLV_ENHANCED_VIDEO_CAPS "video/x-h265, stream-format=(string)hvc1, alignment=(string)au; \
+        video/x-av1, stream-format=(string)obu-stream, alignment=(string)tu;"
 
 // The following three are non-standard but apparently used, see in ffmpeg
 
@@ -142,7 +144,12 @@ GST_ELEMENT_REGISTER_DEFINE_WITH_CODE (flvdemux, "flvdemux",
 #define RESYNC_THRESHOLD 2000
 
 /* how much stream time to wait for audio tags to appear after we have video, or vice versa */
-#define NO_MORE_PADS_THRESHOLD (6 * GST_SECOND)
+#define DEFAULT_NO_MORE_PADS_THRESHOLD (6 * GST_SECOND)
+
+enum
+{
+  PROP_NO_MORE_PADS_THRESHOLD = 1,
+};
 
 static gboolean flv_demux_handle_seek_push (GstFlvDemux * demux,
     GstEvent * event);
@@ -1699,6 +1706,7 @@ gst_flv_demux_parse_tag_audio (GstFlvDemux * demux, GstBuffer * buffer)
     /* header starts after 4 bytes of timestamp and 3 bytes of stream id
      * these 7 bytes are present in the buffer before the actual payload (i.e., AudioTagHeader)
      */
+    g_assert (gst_byte_reader_get_pos (&reader) >= 7);
     tag_header_len = gst_byte_reader_get_pos (&reader) - 7;
   } else {
     /* legacy FLV */
@@ -1744,6 +1752,11 @@ gst_flv_demux_parse_tag_audio (GstFlvDemux * demux, GstBuffer * buffer)
         codec_tag, flags);
   }
 
+  if (demux->tag_data_size < tag_header_len) {
+    GST_ERROR_OBJECT (demux, "too small tag for audio tag header");
+    goto beach;
+  }
+
   track = gst_flv_demux_get_track (demux, track_id, TRUE);
 
   if (enhanced) {
@@ -1772,11 +1785,16 @@ gst_flv_demux_parse_tag_audio (GstFlvDemux * demux, GstBuffer * buffer)
             track_id);
         if (track->codec_data) {
           gst_buffer_unref (track->codec_data);
+          track->codec_data = NULL;
         }
 
         /* make sure there are enough bytes remaining */
-        g_assert (gst_byte_reader_get_remaining (&reader) >=
-            (demux->tag_data_size - tag_header_len));
+        if (gst_byte_reader_get_remaining (&reader) <
+            demux->tag_data_size - tag_header_len) {
+          GST_ERROR_OBJECT (demux,
+              "Not enough data available for AAC sequence header");
+          goto beach;
+        }
 
         track->codec_data =
             gst_buffer_copy_region (buffer, GST_BUFFER_COPY_MEMORY,
@@ -1889,8 +1907,11 @@ gst_flv_demux_parse_tag_audio (GstFlvDemux * demux, GstBuffer * buffer)
   }
 
   /* make sure there are enough bytes remaining */
-  g_assert (gst_byte_reader_get_remaining (&reader) >=
-      (demux->tag_data_size - tag_header_len));
+  if (gst_byte_reader_get_remaining (&reader) <
+      demux->tag_data_size - tag_header_len) {
+    GST_ERROR_OBJECT (demux, "Not enough data available for audio tag");
+    goto beach;
+  }
 
   /* Create buffer from pad */
   outbuf = gst_buffer_copy_region (buffer, GST_BUFFER_COPY_MEMORY,
@@ -1960,9 +1981,11 @@ gst_flv_demux_parse_tag_audio (GstFlvDemux * demux, GstBuffer * buffer)
 
   if (G_UNLIKELY (!demux->streams_aware && !demux->no_more_pads
           && (GST_CLOCK_DIFF (track->start,
-                  GST_BUFFER_TIMESTAMP (outbuf)) > NO_MORE_PADS_THRESHOLD))) {
+                  GST_BUFFER_TIMESTAMP (outbuf)) >
+              demux->no_more_pads_threshold))) {
     GST_DEBUG_OBJECT (demux,
-        "Signalling no-more-pads after 6 seconds of audio");
+        "Signalling no-more-pads after %" GST_TIME_FORMAT " of audio",
+        GST_TIME_ARGS (demux->no_more_pads_threshold));
     gst_element_no_more_pads (GST_ELEMENT_CAST (demux));
     demux->no_more_pads = TRUE;
   }
@@ -2065,6 +2088,21 @@ gst_flv_demux_video_negotiate (GstFlvDemux * demux, guint32 codec_tag,
       caps = gst_caps_new_simple ("video/x-h265",
           "stream-format", G_TYPE_STRING, "hvc1",
           "alignment", G_TYPE_STRING, "au", NULL);
+      break;
+    case FLV_VIDEO_CODEC_AV1_AV01_FOURCC:
+      if (!track->codec_data) {
+        GST_DEBUG_OBJECT (demux, "don't have av1 codec data yet");
+        ret = TRUE;
+        goto done;
+      }
+      caps = gst_codec_utils_av1_create_caps_from_av1c (track->codec_data);
+      if (!caps) {
+        GST_WARNING_OBJECT (demux, "failed to parse av1 codec data");
+        goto beach;
+      }
+      gst_caps_set_simple (caps,
+          "stream-format", G_TYPE_STRING, "obu-stream",
+          "alignment", G_TYPE_STRING, "tu", NULL);
       break;
     default:
       GST_WARNING_OBJECT (demux, "unsupported video codec tag %u", codec_tag);
@@ -2453,7 +2491,12 @@ gst_flv_demux_parse_tag_video (GstFlvDemux * demux, GstBuffer * buffer)
   /* header starts after 4 bytes of timestamp and 3 bytes of stream id
    * these 7 bytes are present in the buffer before the actual payload (i.e., VideoTagHeader)
    */
+  g_assert (gst_byte_reader_get_pos (&reader) >= 7);
   codec_data = gst_byte_reader_get_pos (&reader) - 7;
+  if (demux->tag_data_size < codec_data) {
+    GST_ERROR_OBJECT (demux, "too small tag for video codec_data");
+    goto beach;
+  }
 
   GST_LOG_OBJECT (demux, "video tag with codec tag %u, keyframe (%d) "
       "(flags %02X)", codec_tag, keyframe, flags);
@@ -2464,20 +2507,19 @@ gst_flv_demux_parse_tag_video (GstFlvDemux * demux, GstBuffer * buffer)
     switch (packet_type) {
       case FLV_VIDEO_PACKET_TYPE_SEQUENCE_START:
       {
-        if (demux->tag_data_size < codec_data) {
-          GST_ERROR_OBJECT (demux,
-              "Got invalid sequence start tag size, ignoring.");
-          break;
-        }
-
         GST_LOG_OBJECT (demux, "got a sequence start packet");
         if (track->codec_data) {
           gst_buffer_unref (track->codec_data);
+          track->codec_data = NULL;
         }
 
         /* make sure there are enough bytes remaining */
-        g_assert (gst_byte_reader_get_remaining (&reader) >=
-            (demux->tag_data_size - codec_data));
+        if (gst_byte_reader_get_remaining (&reader) <
+            demux->tag_data_size - codec_data) {
+          GST_ERROR_OBJECT (demux,
+              "Not enough data available for video sequence start");
+          goto beach;
+        }
 
         track->codec_data = gst_buffer_copy_region (buffer,
             GST_BUFFER_COPY_MEMORY, gst_byte_reader_get_pos (&reader),
@@ -2610,8 +2652,11 @@ gst_flv_demux_parse_tag_video (GstFlvDemux * demux, GstBuffer * buffer)
   }
 
   /* make sure there are enough bytes remaining */
-  g_assert (gst_byte_reader_get_remaining (&reader) >=
-      (demux->tag_data_size - codec_data));
+  if (gst_byte_reader_get_remaining (&reader) <
+      demux->tag_data_size - codec_data) {
+    GST_ERROR_OBJECT (demux, "Not enough data available for video tag");
+    goto beach;
+  }
 
   /* Create buffer from pad */
   outbuf = gst_buffer_copy_region (buffer, GST_BUFFER_COPY_MEMORY,
@@ -2685,10 +2730,12 @@ gst_flv_demux_parse_tag_video (GstFlvDemux * demux, GstBuffer * buffer)
 
   if (G_UNLIKELY (!demux->streams_aware && !demux->no_more_pads
           && (GST_CLOCK_DIFF (track->start,
-                  GST_BUFFER_TIMESTAMP (outbuf)) > NO_MORE_PADS_THRESHOLD))) {
+                  GST_BUFFER_TIMESTAMP (outbuf)) >
+              demux->no_more_pads_threshold))) {
     GST_DEBUG_OBJECT (demux,
         "Signalling no-more-pads because no other stream was found"
-        " after 6 seconds of video");
+        " after %" GST_TIME_FORMAT " of video",
+        GST_TIME_ARGS (demux->no_more_pads_threshold));
     gst_element_no_more_pads (GST_ELEMENT_CAST (demux));
     demux->no_more_pads = TRUE;
   }
@@ -4114,7 +4161,8 @@ exit:
     gst_pad_pause_task (demux->sinkpad);
   } else {
     gst_pad_start_task (demux->sinkpad,
-        (GstTaskFunction) gst_flv_demux_loop, demux->sinkpad, NULL);
+        (GstTaskFunction) gst_flv_demux_loop, gst_object_ref (demux->sinkpad),
+        gst_object_unref);
   }
 
   GST_PAD_STREAM_UNLOCK (demux->sinkpad);
@@ -4181,7 +4229,7 @@ gst_flv_demux_sink_activate_mode (GstPad * sinkpad, GstObject * parent,
         demux->random_access = TRUE;
         demux->segment_seqnum = gst_util_seqnum_next ();
         res = gst_pad_start_task (sinkpad, (GstTaskFunction) gst_flv_demux_loop,
-            sinkpad, NULL);
+            gst_object_ref (sinkpad), gst_object_unref);
       } else {
         demux->random_access = FALSE;
         res = gst_pad_stop_task (sinkpad);
@@ -4714,6 +4762,42 @@ gst_flv_demux_cleanup_track (gpointer data, gpointer user_data)
 }
 
 static void
+gst_flv_demux_set_property (GObject * object, guint property_id,
+    const GValue * value, GParamSpec * pspec)
+{
+  GstFlvDemux *demux = GST_FLV_DEMUX (object);
+
+  GST_OBJECT_LOCK (demux);
+  switch (property_id) {
+    case PROP_NO_MORE_PADS_THRESHOLD:
+      demux->no_more_pads_threshold = g_value_get_uint64 (value);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
+      break;
+  }
+  GST_OBJECT_UNLOCK (demux);
+}
+
+static void
+gst_flv_demux_get_property (GObject * object, guint property_id,
+    GValue * value, GParamSpec * pspec)
+{
+  GstFlvDemux *demux = GST_FLV_DEMUX (object);
+
+  GST_OBJECT_LOCK (demux);
+  switch (property_id) {
+    case PROP_NO_MORE_PADS_THRESHOLD:
+      g_value_set_uint64 (value, demux->no_more_pads_threshold);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
+      break;
+  }
+  GST_OBJECT_UNLOCK (demux);
+}
+
+static void
 gst_flv_demux_class_init (GstFlvDemuxClass * klass)
 {
   GstElementClass *gstelement_class = GST_ELEMENT_CLASS (klass);
@@ -4728,6 +4812,22 @@ gst_flv_demux_class_init (GstFlvDemuxClass * klass)
   gstelement_class->set_index = GST_DEBUG_FUNCPTR (gst_flv_demux_set_index);
   gstelement_class->get_index = GST_DEBUG_FUNCPTR (gst_flv_demux_get_index);
 #endif
+
+  gobject_class->get_property = gst_flv_demux_get_property;
+  gobject_class->set_property = gst_flv_demux_set_property;
+
+    /**
+     * GstFlvDemux:no-more-pads-threshold:
+     *
+     * Since: 1.30
+     */
+  g_object_class_install_property (gobject_class, PROP_NO_MORE_PADS_THRESHOLD,
+      g_param_spec_uint64 ("no-more-pads-threshold", "no-more-pads threshold",
+          "Timeout in nanoseconds to wait before emitting no-more-pads. "
+          "Only effective in non-streams-aware pipelines", 0,
+          G_MAXUINT64 - 1, DEFAULT_NO_MORE_PADS_THRESHOLD,
+          (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
+              GST_PARAM_MUTABLE_READY)));
 
   gst_element_class_add_static_pad_template (gstelement_class,
       &flv_sink_template);

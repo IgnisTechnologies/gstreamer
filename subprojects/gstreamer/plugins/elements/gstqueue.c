@@ -1045,7 +1045,7 @@ gst_queue_handle_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
       queue->unexpected = FALSE;
       if (gst_pad_is_active (queue->srcpad)) {
         gst_pad_start_task (queue->srcpad, (GstTaskFunction) gst_queue_loop,
-            queue->srcpad, NULL);
+            gst_object_ref (queue->srcpad), gst_object_unref);
       } else {
         GST_INFO_OBJECT (queue->srcpad, "not re-starting task on srcpad, "
             "pad not active any longer");
@@ -1099,7 +1099,8 @@ gst_queue_handle_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
                 queue->eos = FALSE;
                 queue->unexpected = FALSE;
                 gst_pad_start_task (queue->srcpad,
-                    (GstTaskFunction) gst_queue_loop, queue->srcpad, NULL);
+                    (GstTaskFunction) gst_queue_loop,
+                    gst_object_ref (queue->srcpad), gst_object_unref);
               } else {
                 queue->eos = FALSE;
                 queue->unexpected = FALSE;
@@ -1545,8 +1546,7 @@ next:
     GST_QUEUE_MUTEX_LOCK_CHECK (queue, out_flushing);
     /* if we're EOS, return EOS so that the task pauses. */
     if (type == GST_EVENT_EOS) {
-      GST_CAT_LOG_OBJECT (queue_dataflow, queue,
-          "pushed EOS event %" GST_PTR_FORMAT ", return EOS", event);
+      GST_CAT_LOG_OBJECT (queue_dataflow, queue, "pushed EOS event return EOS");
       result = GST_FLOW_EOS;
     }
   } else if (GST_IS_QUERY (data)) {
@@ -1682,7 +1682,8 @@ gst_queue_handle_src_event (GstPad * pad, GstObject * parent, GstEvent * event)
         /* when we got not linked, assume downstream is linked again now and we
          * can try to start pushing again */
         queue->srcresult = GST_FLOW_OK;
-        gst_pad_start_task (pad, (GstTaskFunction) gst_queue_loop, pad, NULL);
+        gst_pad_start_task (pad, (GstTaskFunction) gst_queue_loop,
+            gst_object_ref (pad), gst_object_unref);
       }
       GST_QUEUE_MUTEX_UNLOCK (queue);
 
@@ -1841,8 +1842,8 @@ gst_queue_src_activate_mode (GstPad * pad, GstObject * parent, GstPadMode mode,
         queue->eos = FALSE;
         queue->unexpected = FALSE;
         result =
-            gst_pad_start_task (pad, (GstTaskFunction) gst_queue_loop, pad,
-            NULL);
+            gst_pad_start_task (pad, (GstTaskFunction) gst_queue_loop,
+            gst_object_ref (pad), gst_object_unref);
         GST_QUEUE_MUTEX_UNLOCK (queue);
       } else {
         /* step 1, unblock loop function */

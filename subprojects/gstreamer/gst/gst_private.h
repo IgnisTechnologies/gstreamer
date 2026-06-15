@@ -157,6 +157,8 @@ gboolean _priv_gst_registry_remove_cache_plugins (GstRegistry *registry);
 
 G_GNUC_INTERNAL  void _priv_gst_registry_cleanup (void);
 
+G_GNUC_INTERNAL  void _priv_gst_registry_bump_feature_list_cookie (GstRegistry *registry);
+
 GST_API
 gboolean _gst_plugin_loader_client_run (const gchar * pipe_name);
 
@@ -300,6 +302,7 @@ GST_API GstDebugCategory *GST_CAT_EVENT;
 GST_API GstDebugCategory *GST_CAT_MESSAGE;
 GST_API GstDebugCategory *GST_CAT_PARAMS;
 GST_API GstDebugCategory *GST_CAT_CALL_TRACE;
+GST_API GstDebugCategory *GST_CAT_SEGMENT;
 GST_API GstDebugCategory *GST_CAT_SIGNAL;
 GST_API GstDebugCategory *GST_CAT_PROBE;
 GST_API GstDebugCategory *GST_CAT_REGISTRY;
@@ -346,6 +349,7 @@ extern GstClockTime _priv_gst_start_time;
 #define GST_CAT_MESSAGE          NULL
 #define GST_CAT_PARAMS           NULL
 #define GST_CAT_CALL_TRACE       NULL
+#define GST_CAT_SEGMENT          NULL
 #define GST_CAT_SIGNAL           NULL
 #define GST_CAT_PROBE            NULL
 #define GST_CAT_REGISTRY         NULL

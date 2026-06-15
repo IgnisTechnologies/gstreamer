@@ -29,11 +29,9 @@
 #include <VideoToolbox/VideoToolbox.h>
 #include "videotexturecache.h"
 #include "glcontexthelper.h"
-#if defined(APPLEMEDIA_MOLTENVK)
+#ifdef APPLEMEDIA_MOLTENVK
 #include <gst/vulkan/vulkan.h>
 #endif
-#include <gst/codecparsers/gsth264parser.h>
-#include <gst/codecparsers/gstav1parser.h>
 
 G_BEGIN_DECLS
 
@@ -47,13 +45,6 @@ typedef struct _GstVtdec GstVtdec;
 typedef struct _GstVtdecClass GstVtdecClass;
 
 #define GST_VTDEC_DPB_MAX_SIZE 16
-
-typedef enum
-{
-    NoneSupported   = 0,
-    Av1Supported    = 1 << 0,
-    Vp9Supported    = 1 << 1,
-} SupplementalSupport;
 
 struct _GstVtdec
 {
@@ -78,13 +69,15 @@ struct _GstVtdec
   /* protected by the STREAM_LOCK */
   GstFlowReturn downstream_ret;
 
-#if defined(APPLEMEDIA_MOLTENVK)
+  /* access via g_atomic_int_* */
+  gboolean require_reset;
+
+#ifdef APPLEMEDIA_MOLTENVK
   GstVulkanInstance *instance;
   GstVulkanDevice *device;
 #endif
 
   gboolean require_hardware;
-  SupplementalSupport codec_support;
 
   gboolean av1_needs_sequence_header;  /* TRUE if we need to wait for sequence header OBU before creating session */
   GstBuffer *av1_sequence_header_obu;  /* Store the sequence header OBU for format description */

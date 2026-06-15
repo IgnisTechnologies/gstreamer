@@ -648,7 +648,7 @@ gst_ffmpegdemux_perform_seek (GstFFMpegDemux * demux, GstEvent * event)
   /* and restart the task in case it got paused explicitely or by
    * the FLUSH_START event we pushed out. */
   gst_pad_start_task (demux->sinkpad, (GstTaskFunction) gst_ffmpegdemux_loop,
-      demux->sinkpad, NULL);
+      gst_object_ref (demux->sinkpad), gst_object_unref);
 
   /* and release the lock again so we can continue streaming */
   GST_PAD_STREAM_UNLOCK (demux->sinkpad);
@@ -1389,13 +1389,12 @@ gst_ffmpegdemux_open (GstFFMpegDemux * demux)
   /* ERRORS */
 beach:
   {
-    if (demux->context->pb) {
-      if (demux->seekable)
-        gst_ffmpegdata_close (demux->context->pb);
-      else
-        gst_ffmpeg_pipe_close (demux->context->pb);
+    if (demux->seekable)
+      gst_ffmpegdata_close (iocontext);
+    else
+      gst_ffmpeg_pipe_close (iocontext);
+    if (demux->context)
       demux->context->pb = NULL;
-    }
     avformat_close_input (&demux->context);
 
     GST_ELEMENT_ERROR (demux, LIBRARY, FAILED, (NULL),
@@ -1965,7 +1964,7 @@ gst_ffmpegdemux_sink_activate_pull (GstPad * sinkpad, GstObject * parent,
   if (active) {
     demux->seekable = TRUE;
     res = gst_pad_start_task (sinkpad, (GstTaskFunction) gst_ffmpegdemux_loop,
-        demux, NULL);
+        gst_object_ref (demux), gst_object_unref);
   } else {
     res = gst_pad_stop_task (sinkpad);
     demux->seekable = FALSE;
