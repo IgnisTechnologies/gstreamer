@@ -3337,7 +3337,8 @@ exit:
   /* restart our task since it might have been stopped when we did the
    * flush. */
   gst_pad_start_task (demux->common.sinkpad,
-      (GstTaskFunction) gst_matroska_demux_loop, demux->common.sinkpad, NULL);
+      (GstTaskFunction) gst_matroska_demux_loop,
+      gst_object_ref (demux->common.sinkpad), gst_object_unref);
 
   /* streaming can continue now */
   if (pad_locked) {
@@ -3700,7 +3701,8 @@ gst_matroska_demux_seek_to_previous_keyframe (GstMatroskaDemux * demux)
     if (!gst_matroska_demux_move_to_entry (demux, entry, FALSE, TRUE))
       goto exit;
     ret = GST_FLOW_OK;
-  } else if (demux->cluster_prevsize > 0 &&
+  } else if (!demux->common.index_parsed &&
+      demux->cluster_prevsize > 0 &&
       demux->cluster_offset >=
       demux->cluster_prevsize + demux->common.ebml_segment_start) {
     /* Fallback to ClusterPrevSize */
@@ -7119,7 +7121,7 @@ gst_matroska_demux_sink_activate_mode (GstPad * sinkpad, GstObject * parent,
       if (active) {
         /* if we have a scheduler we can start the task */
         gst_pad_start_task (sinkpad, (GstTaskFunction) gst_matroska_demux_loop,
-            sinkpad, NULL);
+            gst_object_ref (sinkpad), gst_object_unref);
       } else {
         gst_pad_stop_task (sinkpad);
       }
@@ -7433,7 +7435,30 @@ gst_matroska_demux_video_caps (GstMatroskaTrackVideoContext *
       gst_caps_set_simple (caps, "codec-alpha", G_TYPE_BOOLEAN, TRUE, NULL);
     *codec_name = g_strdup_printf ("On2 VP8");
   } else if (!strcmp (codec_id, GST_MATROSKA_CODEC_ID_VIDEO_VP9)) {
+    guint8 profile = G_MAXUINT8, level = G_MAXUINT8;
+    guint8 bit_depth = G_MAXUINT8, chroma_subsampling = G_MAXUINT8;
+
     caps = gst_caps_new_empty_simple ("video/x-vp9");
+
+    if (data != NULL &&
+        gst_matroska_get_vpx_config_from_codec_private (data, size, &profile,
+            &level, &bit_depth, &chroma_subsampling)) {
+      gint profile_i, level_i, bit_depth_i, chroma_subsampling_i;
+
+      profile_i = (profile == G_MAXUINT8) ? -1 : profile;
+      level_i = (level == G_MAXUINT8) ? -1 : level;
+      bit_depth_i = (bit_depth == G_MAXUINT8) ? -1 : bit_depth;
+      chroma_subsampling_i =
+          (chroma_subsampling == G_MAXUINT8) ? -1 : chroma_subsampling;
+
+      if (!gst_codec_utils_vpx_caps_set_format_fields (caps, profile_i,
+              level_i, bit_depth_i, chroma_subsampling_i))
+        GST_DEBUG ("Invalid VP9 format fields in CodecPrivate");
+    } else if (data != NULL) {
+      GST_DEBUG
+          ("Invalid VP9 CodecPrivate, not setting VP9 profile/chroma fields");
+    }
+
     if (videocontext->alpha_mode)
       gst_caps_set_simple (caps, "codec-alpha", G_TYPE_BOOLEAN, TRUE, NULL);
     *codec_name = g_strdup_printf ("On2 VP9");

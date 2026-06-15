@@ -1,8 +1,9 @@
 project('gstreamer', 'c',
-  version : '1.29.0.1',
+  version : '1.29.1.1',
   meson_version : '>= 1.4',
   default_options : [ 'warning_level=1',
-                      'buildtype=debugoptimized' ])
+                      'buildtype=debugoptimized',
+                      'c_std=gnu11,c11' ])
 
 gst_version = meson.project_version()
 version_arr = gst_version.split('.')
@@ -401,6 +402,11 @@ if host_system != 'windows'
 elif cc.has_function('_pipe', prefix : '#include <io.h>')
   cdata.set('HAVE_PIPE', 1)
 endif
+if host_system == 'windows'
+  if cc.has_function('_wfsopen', prefix : '#include <stdio.h>')
+    cdata.set('HAVE__WFSOPEN', 1)
+  endif
+endif
 
 # Platform deps; only ws2_32 and execinfo for now
 platform_deps = []
@@ -722,7 +728,7 @@ endif
 configure_file(output : 'config.h', configuration : cdata)
 install_data('gst-element-check-1.0.m4', install_dir : join_paths(get_option('datadir'), 'aclocal'))
 
-meson.add_dist_script('scripts/gen-changelog.py', meson.project_name(), '1.26.0', meson.project_version())
+meson.add_dist_script('scripts/gen-changelog.py', meson.project_name(), '1.28.0', meson.project_version())
 
 plugin_names = []
 gst_plugins = []

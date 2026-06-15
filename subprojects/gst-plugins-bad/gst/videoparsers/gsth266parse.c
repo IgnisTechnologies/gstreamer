@@ -47,6 +47,7 @@
 #include <gst/base/base.h>
 #include <gst/pbutils/pbutils.h>
 #include "gstvideoparserselements.h"
+#include <gst/video/gstvideodscmeta.h>
 #include "gsth266parse.h"
 
 #include <string.h>
@@ -165,6 +166,9 @@ static GstCaps *gst_h266_parse_get_caps (GstBaseParse * parse,
 static void
 gst_h266_parse_process_sei_user_data (GstH266Parse * h266parse,
     GstH266RegisteredUserData * rud);
+static void
+gst_h266_parse_process_sei_user_data_unregistered (GstH266Parse * h266parse,
+    GstH274UserDataUnregistered * urud);
 
 static void
 gst_h266_parse_class_init (GstH266ParseClass * klass)
@@ -257,6 +261,21 @@ gst_h266_parse_reset_frame (GstH266Parse * h266parse)
   h266parse->have_sps_in_frame = FALSE;
   h266parse->have_pps_in_frame = FALSE;
   gst_adapter_clear (h266parse->frame_out);
+  gst_video_clear_user_data (&h266parse->user_data, FALSE);
+  gst_video_clear_user_data_unregistered (&h266parse->user_data_unregistered,
+      FALSE);
+  if (h266parse->dsc_initialization_state == GST_H266_PARSE_SEI_ACTIVE) {
+    gst_h274_dsc_initialization_free (&h266parse->dsc_initialization);
+    h266parse->dsc_initialization_state = GST_H266_PARSE_SEI_EXPIRED;
+  }
+  if (h266parse->dsc_selection_state == GST_H266_PARSE_SEI_ACTIVE) {
+    gst_h274_dsc_selection_free (&h266parse->dsc_selection);
+    h266parse->dsc_selection_state = GST_H266_PARSE_SEI_EXPIRED;
+  }
+  if (h266parse->dsc_verification_state == GST_H266_PARSE_SEI_ACTIVE) {
+    gst_h274_dsc_verification_free (&h266parse->dsc_verification);
+    h266parse->dsc_verification_state = GST_H266_PARSE_SEI_EXPIRED;
+  }
 }
 
 static void
@@ -308,6 +327,9 @@ gst_h266_parse_reset_stream_info (GstH266Parse * h266parse)
 
   gst_video_content_light_level_init (&h266parse->content_light_level);
   h266parse->content_light_level_state = GST_H266_PARSE_SEI_EXPIRED;
+  h266parse->dsc_initialization_state = GST_H266_PARSE_SEI_EXPIRED;
+  h266parse->dsc_selection_state = GST_H266_PARSE_SEI_EXPIRED;
+  h266parse->dsc_verification_state = GST_H266_PARSE_SEI_EXPIRED;
 }
 
 static void
@@ -627,6 +649,27 @@ gst_h266_parse_process_sei (GstH266Parse * h266parse, GstH266NalUnit * nalu)
         gst_h266_parse_process_sei_user_data (h266parse,
             &sei.payload.registered_user_data);
         break;
+      case GST_H266_SEI_USER_DATA_UNREGISTERED:
+        gst_h266_parse_process_sei_user_data_unregistered (h266parse,
+            &sei.payload.user_data_unregistered);
+        break;
+      case GST_H266_SEI_DIGITALLY_SIGNED_CONTENT_INITIALIZATION:
+        gst_h274_dsc_initialization_free (&h266parse->dsc_initialization);
+        gst_h274_dsc_initialization_copy (&h266parse->dsc_initialization,
+            &sei.payload.dsc_initialization);
+        h266parse->dsc_initialization_state = GST_H266_PARSE_SEI_ACTIVE;
+        break;
+      case GST_H266_SEI_DIGITALLY_SIGNED_CONTENT_SELECTION:
+        gst_h274_dsc_selection_copy (&h266parse->dsc_selection,
+            &sei.payload.dsc_selection);
+        h266parse->dsc_selection_state = GST_H266_PARSE_SEI_ACTIVE;
+        break;
+      case GST_H266_SEI_DIGITALLY_SIGNED_CONTENT_VERIFICATION:
+        gst_h274_dsc_verification_free (&h266parse->dsc_verification);
+        gst_h274_dsc_verification_copy (&h266parse->dsc_verification,
+            &sei.payload.dsc_verification);
+        h266parse->dsc_verification_state = GST_H266_PARSE_SEI_ACTIVE;
+        break;
       default:
         break;
     }
@@ -798,7 +841,9 @@ gst_h266_parse_process_nal (GstH266Parse * h266parse, GstH266NalUnit * nalu)
     case GST_H266_NAL_PREFIX_SEI:
     case GST_H266_NAL_SUFFIX_SEI:
       /* expected state: got-sps */
-      if (!GST_H266_PARSE_STATE_VALID (h266parse, GST_H266_PARSE_STATE_GOT_SPS))
+      if (nal_type == GST_H266_NAL_SUFFIX_SEI
+          && !GST_H266_PARSE_STATE_VALID (h266parse,
+              GST_H266_PARSE_STATE_GOT_SPS))
         return FALSE;
 
       h266parse->header = TRUE;
@@ -825,6 +870,11 @@ gst_h266_parse_process_nal (GstH266Parse * h266parse, GstH266NalUnit * nalu)
       }
 
       if (ph->gdr_or_irap_pic_flag) {
+        if (h266parse->mastering_display_info_state ==
+            GST_H266_PARSE_SEI_ACTIVE ||
+            h266parse->content_light_level_state == GST_H266_PARSE_SEI_ACTIVE)
+          h266parse->update_caps = TRUE;
+
         if (h266parse->mastering_display_info_state ==
             GST_H266_PARSE_SEI_PARSED)
           h266parse->mastering_display_info_state = GST_H266_PARSE_SEI_ACTIVE;
@@ -888,6 +938,11 @@ gst_h266_parse_process_nal (GstH266Parse * h266parse, GstH266NalUnit * nalu)
 
       /* if slice.picture_header_in_slice_header_flag == 0, PH will do this. */
       if (is_irap_or_gdr && slice.picture_header_in_slice_header_flag) {
+        if (h266parse->mastering_display_info_state ==
+            GST_H266_PARSE_SEI_ACTIVE ||
+            h266parse->content_light_level_state == GST_H266_PARSE_SEI_ACTIVE)
+          h266parse->update_caps = TRUE;
+
         if (h266parse->mastering_display_info_state ==
             GST_H266_PARSE_SEI_PARSED)
           h266parse->mastering_display_info_state = GST_H266_PARSE_SEI_ACTIVE;
@@ -2358,16 +2413,8 @@ gst_h266_parse_update_src_caps (GstH266Parse * h266parse, GstCaps * caps)
 
       caps = gst_caps_copy (sink_caps);
 
-      /* sps should give this but upstream overrides */
-      if (s && gst_structure_has_field (s, "width"))
-        gst_structure_get_int (s, "width", &width);
-      else
-        width = h266parse->width;
-
-      if (s && gst_structure_has_field (s, "height"))
-        gst_structure_get_int (s, "height", &height);
-      else
-        height = h266parse->height;
+      width = h266parse->width;
+      height = h266parse->height;
 
       gst_caps_set_simple (caps, "width", G_TYPE_INT, width,
           "height", G_TYPE_INT, height, NULL);
@@ -2443,6 +2490,7 @@ gst_h266_parse_update_src_caps (GstH266Parse * h266parse, GstCaps * caps)
     const gchar *mdi_str = NULL;
     const gchar *cll_str = NULL;
     gboolean codec_data_modified = FALSE;
+    GstVideoHDRFormat hdr_format = GST_VIDEO_HDR_FORMAT_NONE;
     GstStructure *st;
 
     gst_caps_set_simple (caps, "parsed", G_TYPE_BOOLEAN, TRUE,
@@ -2559,6 +2607,19 @@ gst_h266_parse_update_src_caps (GstH266Parse * h266parse, GstCaps * caps)
       gst_caps_set_simple (caps, "lcevc", G_TYPE_BOOLEAN, TRUE, NULL);
     else
       gst_caps_set_simple (caps, "lcevc", G_TYPE_BOOLEAN, FALSE, NULL);
+
+    if (h266parse->user_data.has_hdr10_plus_data) {
+      hdr_format = GST_VIDEO_HDR_FORMAT_HDR10_PLUS;
+    } else if (gst_structure_has_field (st, "mastering-display-info") &&
+        gst_structure_has_field (st, "content-light-level")) {
+      hdr_format = GST_VIDEO_HDR_FORMAT_HDR10;
+    }
+
+    if (hdr_format != GST_VIDEO_HDR_FORMAT_NONE) {
+      gst_caps_set_simple (caps,
+          "hdr-format", G_TYPE_STRING,
+          gst_video_hdr_format_to_string (hdr_format), NULL);
+    }
 
     src_caps = gst_pad_get_current_caps (GST_BASE_PARSE_SRC_PAD (h266parse));
 
@@ -3059,6 +3120,18 @@ gst_h266_parse_pre_push_frame (GstBaseParse * parse, GstBaseParseFrame * frame)
   gst_video_push_user_data_unregistered ((GstElement *) h266parse,
       &h266parse->user_data_unregistered, parse_buffer);
 
+  if (h266parse->dsc_initialization_state == GST_H266_PARSE_SEI_ACTIVE)
+    gst_buffer_add_video_dsc_initialization_meta
+        (parse_buffer, &h266parse->dsc_initialization);
+
+  if (h266parse->dsc_selection_state == GST_H266_PARSE_SEI_ACTIVE)
+    gst_buffer_add_video_dsc_selection_meta
+        (parse_buffer, &h266parse->dsc_selection);
+
+  if (h266parse->dsc_verification_state == GST_H266_PARSE_SEI_ACTIVE)
+    gst_buffer_add_video_dsc_verification_meta
+        (parse_buffer, &h266parse->dsc_verification);
+
   gst_h266_parse_reset_frame (h266parse);
 
   return GST_FLOW_OK;
@@ -3358,6 +3431,18 @@ gst_h266_parse_process_sei_user_data (GstH266Parse * h266parse,
 
   gst_video_parse_user_data ((GstElement *) h266parse, &h266parse->user_data,
       &br, field, provider_code);
+}
+
+static void
+gst_h266_parse_process_sei_user_data_unregistered (GstH266Parse * h266parse,
+    GstH274UserDataUnregistered * urud)
+{
+  GstByteReader br;
+
+  gst_byte_reader_init (&br, urud->data, urud->size);
+
+  gst_video_parse_user_data_unregistered ((GstElement *) h266parse,
+      &h266parse->user_data_unregistered, &br, urud->uuid);
 }
 
 static void

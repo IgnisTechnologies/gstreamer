@@ -1947,6 +1947,9 @@ handle_mq_output (GstPad * pad, GstPadProbeInfo * info, MqStreamCtx * ctx)
         }
         /* This is in the case the muxer doesn't allow this change of caps */
         GST_SPLITMUX_LOCK (splitmux);
+        if (splitmux->output_state == SPLITMUX_OUTPUT_STATE_STOPPED)
+          goto beach;
+
         locked = TRUE;
         ctx->caps_change = TRUE;
 
@@ -2441,6 +2444,11 @@ start_next_fragment (GstSplitMuxSink * splitmux, MqStreamCtx * ctx)
   g_object_set_qdata ((GObject *) sink, SENT_FRAGMENT_CLOSED, NULL);
   send_fragment_opened_closed_msg (splitmux, TRUE, sink);
 
+  /* We released the splitmux lock above - need to re-check that we didn't get shut down
+   * before updating the state */
+  if (splitmux->output_state == SPLITMUX_OUTPUT_STATE_STOPPED)
+    return GST_FLOW_FLUSHING;
+
   /* FIXME: Is this always the correct next state? */
   GST_LOG_OBJECT (splitmux, "Resetting state to AWAITING_COMMAND");
   splitmux->output_state = SPLITMUX_OUTPUT_STATE_AWAITING_COMMAND;
@@ -2545,7 +2553,7 @@ bus_handler (GstBin * bin, GstMessage * message)
             "Passing EOS message. Output state %d max_out_running_time %"
             GST_STIME_FORMAT, splitmux->output_state,
             GST_STIME_ARGS (splitmux->max_out_running_time));
-      } else {
+      } else if (splitmux->output_state != SPLITMUX_OUTPUT_STATE_STOPPED) {
         GST_DEBUG_OBJECT (splitmux, "Caught EOS at end of fragment, dropping");
         splitmux->output_state = SPLITMUX_OUTPUT_STATE_START_NEXT_FILE;
         GST_SPLITMUX_BROADCAST_OUTPUT (splitmux);
@@ -3240,10 +3248,15 @@ handle_mq_input (GstPad * pad, GstPadProbeInfo * info, MqStreamCtx * ctx)
     running_time = ctx->in_running_time;
   }
 
-  if (GST_CLOCK_TIME_IS_VALID (pts))
-    running_time_pts = my_segment_to_running_time (&ctx->in_segment, pts);
-  else
-    running_time_pts = GST_CLOCK_STIME_NONE;
+  running_time_pts = my_segment_to_running_time (&ctx->in_segment, pts);
+  if (!GST_CLOCK_STIME_IS_VALID (running_time_pts)
+      && ctx->is_reference
+      && GST_CLOCK_STIME_IS_VALID (splitmux->max_in_running_time_dts)) {
+    GST_ELEMENT_ERROR (splitmux, STREAM, FAILED, (NULL),
+        ("%" GST_PTR_FORMAT "has no valid PTS. Bailing.", buf));
+    ret = GST_FLOW_ERROR;
+    goto beach;
+  }
 
   if (GST_CLOCK_TIME_IS_VALID (dts)) {
     running_time_dts = my_segment_to_running_time (&ctx->in_segment, dts);
@@ -4356,7 +4369,6 @@ gst_splitmux_sink_change_state (GstElement * element, GstStateChange transition)
       GST_SPLITMUX_STATE_UNLOCK (splitmux);
 
       GST_SPLITMUX_LOCK (splitmux);
-      gst_splitmux_sink_reset (splitmux);
       splitmux->output_state = SPLITMUX_OUTPUT_STATE_STOPPED;
       splitmux->input_state = SPLITMUX_INPUT_STATE_STOPPED;
       /* Wake up any blocked threads */
@@ -4393,6 +4405,7 @@ gst_splitmux_sink_change_state (GstElement * element, GstStateChange transition)
     }
     case GST_STATE_CHANGE_READY_TO_NULL:
       GST_SPLITMUX_LOCK (splitmux);
+      gst_splitmux_sink_reset (splitmux);
       splitmux->cur_fragment_id = splitmux->next_fragment_id = 0;
       /* Reset internal elements only if no pad contexts are using them */
       if (splitmux->contexts == NULL)

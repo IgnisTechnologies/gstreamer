@@ -661,7 +661,7 @@ gst_vulkan_swapper_get_supported_caps (GstVulkanSwapper * swapper,
 {
   GstVulkanSwapperPrivate *priv = GET_PRIV (swapper);
   GstStructure *s;
-  GstCaps *caps;
+  GstCaps *caps, *allowed_caps, *intersect;
 
   g_return_val_if_fail (GST_IS_VULKAN_SWAPPER (swapper), NULL);
 
@@ -703,9 +703,21 @@ gst_vulkan_swapper_get_supported_caps (GstVulkanSwapper * swapper,
         G_MAXINT, 1, NULL);
   }
 
-  GST_INFO_OBJECT (swapper, "Probed the following caps %" GST_PTR_FORMAT, caps);
+  /* Make sure we only advertise what's listed in GST_VULKAN_SWAPPER_VIDEO_FORMATS */
+  allowed_caps =
+      gst_caps_from_string (GST_VIDEO_CAPS_MAKE_WITH_FEATURES
+      (GST_CAPS_FEATURE_MEMORY_VULKAN_IMAGE, GST_VULKAN_SWAPPER_VIDEO_FORMATS));
 
-  return caps;
+  intersect =
+      gst_caps_intersect_full (caps, allowed_caps, GST_CAPS_INTERSECT_FIRST);
+
+  gst_caps_unref (allowed_caps);
+  gst_caps_unref (caps);
+
+  GST_INFO_OBJECT (swapper, "Probed the following caps %" GST_PTR_FORMAT,
+      intersect);
+
+  return intersect;
 }
 
 static gboolean

@@ -773,36 +773,8 @@ static void gst_x264_enc_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec);
 static gboolean x264_element_init (GstPlugin * plugin);
 
-typedef gboolean (*LoadPresetFunc) (GstPreset * preset, const gchar * name);
-
-LoadPresetFunc parent_load_preset = NULL;
-
-static gboolean
-gst_x264_enc_load_preset (GstPreset * preset, const gchar * name)
-{
-  GstX264Enc *enc = GST_X264_ENC (preset);
-  gboolean res;
-
-  gst_encoder_bitrate_profile_manager_start_loading_preset
-      (enc->bitrate_manager);
-  res = parent_load_preset (preset, name);
-  gst_encoder_bitrate_profile_manager_end_loading_preset (enc->bitrate_manager,
-      res ? name : NULL);
-
-  return res;
-}
-
-static void
-gst_x264_enc_preset_interface_init (GstPresetInterface * iface)
-{
-  parent_load_preset = iface->load_preset;
-  iface->load_preset = gst_x264_enc_load_preset;
-}
-
 #define gst_x264_enc_parent_class parent_class
-G_DEFINE_TYPE_WITH_CODE (GstX264Enc, gst_x264_enc, GST_TYPE_VIDEO_ENCODER,
-    G_IMPLEMENT_INTERFACE (GST_TYPE_PRESET,
-        gst_x264_enc_preset_interface_init));
+G_DEFINE_TYPE (GstX264Enc, gst_x264_enc, GST_TYPE_VIDEO_ENCODER);
 GST_ELEMENT_REGISTER_DEFINE_CUSTOM (x264enc, x264_element_init)
 /* don't forget to free the string after use */
      static const gchar *gst_x264_enc_build_partitions (gint analyse)
@@ -1350,6 +1322,7 @@ gst_x264_enc_init (GstX264Enc * encoder)
   encoder->quantizer = ARG_QUANTIZER_DEFAULT;
   encoder->mp_cache_file = g_strdup (ARG_MULTIPASS_CACHE_FILE_DEFAULT);
   encoder->byte_stream = ARG_BYTE_STREAM_DEFAULT;
+  encoder->bitrate = ARG_BITRATE_DEFAULT;
   encoder->intra_refresh = ARG_INTRA_REFRESH_DEFAULT;
   encoder->vbv_buf_capacity = ARG_VBV_BUF_CAPACITY_DEFAULT;
   encoder->me = ARG_ME_DEFAULT;
@@ -1383,9 +1356,6 @@ gst_x264_enc_init (GstX264Enc * encoder)
   encoder->frame_packing = ARG_FRAME_PACKING_DEFAULT;
   encoder->insert_vui = ARG_INSERT_VUI_DEFAULT;
   encoder->nal_hrd = ARG_NAL_HRD_DEFAULT;
-
-  encoder->bitrate_manager =
-      gst_encoder_bitrate_profile_manager_new (ARG_BITRATE_DEFAULT);
 }
 
 typedef struct
@@ -1510,7 +1480,6 @@ gst_x264_enc_finalize (GObject * object)
   FREE_STRING (encoder->tunings);
   FREE_STRING (encoder->option_string);
   FREE_STRING (encoder->option_string_prop);
-  gst_encoder_bitrate_profile_manager_free (encoder->bitrate_manager);
 
 #undef FREE_STRING
 
@@ -1628,7 +1597,6 @@ gst_x264_enc_init_encoder (GstX264Enc * encoder)
 {
   guint pass = 0;
   GstVideoInfo *info;
-  guint bitrate;
 
   if (!encoder->input_state) {
     GST_DEBUG_OBJECT (encoder, "Have no input state yet");
@@ -1793,10 +1761,6 @@ skip_vui_parameters:
 
   encoder->x264param.analyse.b_psnr = 0;
 
-  bitrate =
-      gst_encoder_bitrate_profile_manager_get_bitrate (encoder->bitrate_manager,
-      encoder->input_state ? &encoder->input_state->info : NULL);
-
   /* FIXME 2.0 make configuration more sane and consistent with x264 cmdline:
    * + split pass property into a pass property (pass1/2/3 enum) and rc-method
    * + bitrate property should only be used in case of CBR method
@@ -1813,7 +1777,7 @@ skip_vui_parameters:
     case GST_X264_ENC_PASS_QUAL:
       encoder->x264param.rc.i_rc_method = X264_RC_CRF;
       encoder->x264param.rc.f_rf_constant = encoder->quantizer;
-      encoder->x264param.rc.i_vbv_max_bitrate = bitrate;
+      encoder->x264param.rc.i_vbv_max_bitrate = encoder->bitrate;
       encoder->x264param.rc.i_vbv_buffer_size
           = encoder->x264param.rc.i_vbv_max_bitrate
           * encoder->vbv_buf_capacity / 1000;
@@ -1824,8 +1788,8 @@ skip_vui_parameters:
     case GST_X264_ENC_PASS_PASS3:
     default:
       encoder->x264param.rc.i_rc_method = X264_RC_ABR;
-      encoder->x264param.rc.i_bitrate = bitrate;
-      encoder->x264param.rc.i_vbv_max_bitrate = bitrate;
+      encoder->x264param.rc.i_bitrate = encoder->bitrate;
+      encoder->x264param.rc.i_vbv_max_bitrate = encoder->bitrate;
       encoder->x264param.rc.i_vbv_buffer_size =
           encoder->x264param.rc.i_vbv_max_bitrate
           * encoder->vbv_buf_capacity / 1000;
@@ -2314,9 +2278,6 @@ gst_x264_enc_set_src_caps (GstX264Enc * encoder, GstCaps * caps)
   GstStructure *structure;
   GstVideoCodecState *state;
   GstTagList *tags;
-  guint bitrate =
-      gst_encoder_bitrate_profile_manager_get_bitrate (encoder->bitrate_manager,
-      encoder->input_state ? &encoder->input_state->info : NULL);
 
   outcaps = gst_caps_new_empty_simple ("video/x-h264");
   structure = gst_caps_get_structure (outcaps, 0);
@@ -2385,8 +2346,8 @@ gst_x264_enc_set_src_caps (GstX264Enc * encoder, GstCaps * caps)
   tags = gst_tag_list_new_empty ();
   gst_tag_list_add (tags, GST_TAG_MERGE_REPLACE, GST_TAG_ENCODER, "x264",
       GST_TAG_ENCODER_VERSION, X264_BUILD,
-      GST_TAG_MAXIMUM_BITRATE, bitrate * 1024,
-      GST_TAG_NOMINAL_BITRATE, bitrate * 1024, NULL);
+      GST_TAG_MAXIMUM_BITRATE, encoder->bitrate * 1024,
+      GST_TAG_NOMINAL_BITRATE, encoder->bitrate * 1024, NULL);
   gst_video_encoder_merge_tags (GST_VIDEO_ENCODER (encoder), tags,
       GST_TAG_MERGE_REPLACE);
   gst_tag_list_unref (tags);
@@ -2592,55 +2553,66 @@ gst_x264_enc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
       query);
 }
 
-static void
-gst_x264_enc_add_cc (GstBuffer * buffer, x264_picture_t * pic_in)
+static gboolean
+gst_x264_enc_add_cc (GstVideoCaptionMeta * cc_meta,
+    x264_sei_payload_t * payload)
 {
-  GstVideoCaptionMeta *cc_meta;
+  if (cc_meta->caption_type != GST_VIDEO_CAPTION_TYPE_CEA708_RAW)
+    return FALSE;
+
+  payload->payload_type = 4;    /* Registered user data */
+  payload->payload_size = 10 + cc_meta->size + 1;
+  payload->payload = g_malloc0 (payload->payload_size);
+  payload->payload[0] = 181;    /* 8-bits itu_t_t35_country_code */
+  payload->payload[1] = 0;      /* 16-bits itu_t_t35_provider_code */
+  payload->payload[2] = 49;
+  payload->payload[3] = 'G';    /* 32-bits ATSC_user_identifier */
+  payload->payload[4] = 'A';
+  payload->payload[5] = '9';
+  payload->payload[6] = '4';
+  payload->payload[7] = 3;      /* 8-bits ATSC1_data_user_data_type_code */
+  /* 8-bits:
+   * 1 bit process_em_data_flag (0)
+   * 1 bit process_cc_data_flag (1)
+   * 1 bit additional_data_flag (0)
+   * 5-bits cc_count
+   */
+  payload->payload[8] = ((cc_meta->size / 3) & 0x1f) | 0x40;
+  payload->payload[9] = 255;    /* 8 bits em_data, unused */
+  memcpy (payload->payload + 10, cc_meta->data, cc_meta->size);
+  payload->payload[cc_meta->size + 10] = 255;   /* 8 marker bits */
+
+  return TRUE;
+}
+
+static void
+gst_x264_enc_add_sei (GstBuffer * buffer, x264_picture_t * pic_in)
+{
+  x264_sei_t *sei = &pic_in->extra_sei;
+  GstMeta *meta;
   gpointer iter = NULL;
+  gint num_payloads = 0;
 
-  while ((cc_meta =
-          (GstVideoCaptionMeta *) gst_buffer_iterate_meta_filtered (buffer,
-              &iter, GST_VIDEO_CAPTION_META_API_TYPE))) {
-    guint i = pic_in->extra_sei.num_payloads;
+  while ((meta = gst_buffer_iterate_meta (buffer, &iter))) {
+    if (meta->info->api == GST_VIDEO_CAPTION_META_API_TYPE)
+      num_payloads += 1;
+  }
 
-    if (cc_meta->caption_type != GST_VIDEO_CAPTION_TYPE_CEA708_RAW)
-      continue;
+  sei->num_payloads = 0;
+  sei->payloads = g_new0 (x264_sei_payload_t, num_payloads);
+  sei->sei_free = g_free;       /* used for both payloads array and each payload */
 
-    pic_in->extra_sei.num_payloads += 1;
+  iter = NULL;
 
-    if (!pic_in->extra_sei.payloads)
-      pic_in->extra_sei.payloads = g_new0 (x264_sei_payload_t, 1);
-    else
-      pic_in->extra_sei.payloads =
-          g_renew (x264_sei_payload_t, pic_in->extra_sei.payloads,
-          pic_in->extra_sei.num_payloads);
+  while ((meta = gst_buffer_iterate_meta (buffer, &iter))) {
+    x264_sei_payload_t *payload = &sei->payloads[sei->num_payloads];
 
-    pic_in->extra_sei.sei_free = g_free;
+    if (meta->info->api == GST_VIDEO_CAPTION_META_API_TYPE) {
+      GstVideoCaptionMeta *cc_meta = (GstVideoCaptionMeta *) meta;
 
-    pic_in->extra_sei.payloads[i].payload_size = cc_meta->size + 11;
-    pic_in->extra_sei.payloads[i].payload =
-        g_malloc0 (pic_in->extra_sei.payloads[i].payload_size);
-    pic_in->extra_sei.payloads[i].payload_type = 4;     /* Registered user data */
-    memcpy (pic_in->extra_sei.payloads[i].payload + 10, cc_meta->data,
-        cc_meta->size);
-    pic_in->extra_sei.payloads[i].payload[0] = 181;     /* 8-bits itu_t_t35_country_code */
-    pic_in->extra_sei.payloads[i].payload[1] = 0;       /* 16-bits itu_t_t35_provider_code */
-    pic_in->extra_sei.payloads[i].payload[2] = 49;
-    pic_in->extra_sei.payloads[i].payload[3] = 'G';     /* 32-bits ATSC_user_identifier */
-    pic_in->extra_sei.payloads[i].payload[4] = 'A';
-    pic_in->extra_sei.payloads[i].payload[5] = '9';
-    pic_in->extra_sei.payloads[i].payload[6] = '4';
-    pic_in->extra_sei.payloads[i].payload[7] = 3;       /* 8-bits ATSC1_data_user_data_type_code */
-    /* 8-bits:
-     * 1 bit process_em_data_flag (0)
-     * 1 bit process_cc_data_flag (1)
-     * 1 bit additional_data_flag (0)
-     * 5-bits cc_count
-     */
-    pic_in->extra_sei.payloads[i].payload[8] =
-        ((cc_meta->size / 3) & 0x1f) | 0x40;
-    pic_in->extra_sei.payloads[i].payload[9] = 255;     /* 8 bits em_data, unused */
-    pic_in->extra_sei.payloads[i].payload[cc_meta->size + 10] = 255;    /* 8 marker bits */
+      if (gst_x264_enc_add_cc (cc_meta, payload))
+        sei->num_payloads += 1;
+    }
   }
 }
 
@@ -2701,7 +2673,7 @@ gst_x264_enc_handle_frame (GstVideoEncoder * video_enc,
     }
   }
 
-  gst_x264_enc_add_cc (frame->input_buffer, &pic_in);
+  gst_x264_enc_add_sei (frame->input_buffer, &pic_in);
 
   ret = gst_x264_enc_encode_frame (encoder, &pic_in, frame, &i_nal, TRUE);
 
@@ -2842,18 +2814,13 @@ gst_x264_enc_flush_frames (GstX264Enc * encoder, gboolean send)
 static void
 gst_x264_enc_reconfig (GstX264Enc * encoder)
 {
-  guint bitrate;
-
   if (!encoder->vtable)
     return;
 
-  bitrate =
-      gst_encoder_bitrate_profile_manager_get_bitrate (encoder->bitrate_manager,
-      encoder->input_state ? &encoder->input_state->info : NULL);
   switch (encoder->pass) {
     case GST_X264_ENC_PASS_QUAL:
       encoder->x264param.rc.f_rf_constant = encoder->quantizer;
-      encoder->x264param.rc.i_vbv_max_bitrate = bitrate;
+      encoder->x264param.rc.i_vbv_max_bitrate = encoder->bitrate;
       encoder->x264param.rc.i_vbv_buffer_size
           = encoder->x264param.rc.i_vbv_max_bitrate
           * encoder->vbv_buf_capacity / 1000;
@@ -2863,8 +2830,8 @@ gst_x264_enc_reconfig (GstX264Enc * encoder)
     case GST_X264_ENC_PASS_PASS2:
     case GST_X264_ENC_PASS_PASS3:
     default:
-      encoder->x264param.rc.i_bitrate = bitrate;
-      encoder->x264param.rc.i_vbv_max_bitrate = bitrate;
+      encoder->x264param.rc.i_bitrate = encoder->bitrate;
+      encoder->x264param.rc.i_vbv_max_bitrate = encoder->bitrate;
       encoder->x264param.rc.i_vbv_buffer_size
           = encoder->x264param.rc.i_vbv_max_bitrate
           * encoder->vbv_buf_capacity / 1000;
@@ -2903,8 +2870,7 @@ gst_x264_enc_set_property (GObject * object, guint prop_id,
       gst_x264_enc_reconfig (encoder);
       break;
     case ARG_BITRATE:
-      gst_encoder_bitrate_profile_manager_set_bitrate (encoder->bitrate_manager,
-          g_value_get_uint (value));
+      encoder->bitrate = g_value_get_uint (value);
       gst_x264_enc_reconfig (encoder);
       break;
     case ARG_VBV_BUF_CAPACITY:
@@ -3126,9 +3092,7 @@ gst_x264_enc_get_property (GObject * object, guint prop_id,
       g_value_set_boolean (value, encoder->byte_stream);
       break;
     case ARG_BITRATE:
-      g_value_set_uint (value,
-          gst_encoder_bitrate_profile_manager_get_bitrate
-          (encoder->bitrate_manager, NULL));
+      g_value_set_uint (value, encoder->bitrate);
       break;
     case ARG_INTRA_REFRESH:
       g_value_set_boolean (value, encoder->intra_refresh);
