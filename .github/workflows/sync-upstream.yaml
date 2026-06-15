@@ -50,9 +50,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BRANCH="automation/sync-upstream-main"
+          OPEN_PR_URL="$(gh pr list \
+            --state open \
+            --head "$BRANCH" \
+            --base ignis-main \
+            --json url \
+            --jq '.[0].url // empty')"
 
-          if gh pr view "$BRANCH" --json url >/dev/null 2>&1; then
-            gh pr view "$BRANCH" --json url --jq .url
+          if [ -n "$OPEN_PR_URL" ]; then
+            echo "$OPEN_PR_URL"
           else
             gh pr create \
               --base ignis-main \
