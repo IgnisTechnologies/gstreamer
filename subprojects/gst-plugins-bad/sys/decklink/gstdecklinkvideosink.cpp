@@ -1219,8 +1219,9 @@ gst_decklink_video_sink_set_caps (GstBaseSink * bsink, GstCaps * caps)
   }
   g_mutex_unlock (&self->output->lock);
 
-  self->output->output->SetScheduledFrameCompletionCallback (new
-      GStreamerVideoOutputCallback (self));
+  GStreamerVideoOutputCallback *callback = new GStreamerVideoOutputCallback (self);
+  self->output->output->SetScheduledFrameCompletionCallback (callback);
+  callback->Release();
 
   if (self->mode == GST_DECKLINK_MODE_AUTO) {
     BMDPixelFormat f;

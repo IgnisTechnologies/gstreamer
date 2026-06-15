@@ -84,6 +84,14 @@ if host_system != 'darwin' or applemedia_option.disabled() or not have_objcpp
   subdir_done()
 endif
 
+if cc.get_define('MAC_OS_X_VERSION_MAX_ALLOWED', prefix: '#include <AvailabilityMacros.h>').to_int() < 110000
+  if applemedia_option.enabled()
+    error('applemedia plugin needs Xcode 12.4 or newer')
+  endif
+  warning('Disabling applemedia plugin: needs Xcode 12.4 or newer')
+  subdir_done()
+endif
+
 objc = meson.get_compiler('objc')
 if not objc.has_argument('-fobjc-arc')
   error('ARC is required for building')
@@ -170,7 +178,7 @@ if applemedia_found_deps
     link_args : noseh_link_args,
     kwargs: applemedia_kwargs,
     include_directories : [configinc, libsinc],
-    dependencies : [gstvideo_dep, gstpbutils_dep, gst_dep, gstbase_dep, gstgl_dep, gstglproto_dep, gstcodecparsers_dep] + applemedia_frameworks,
+    dependencies : [gstvideo_dep, gstpbutils_dep, gst_dep, gstbase_dep, gstgl_dep, gstglproto_dep, gstcodecparsers_dep, gstiosurface_dep] + applemedia_frameworks,
     override_options : ['cpp_std=c++11'],
     install : true,
     install_dir : plugins_install_dir,

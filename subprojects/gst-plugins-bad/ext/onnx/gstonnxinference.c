@@ -30,29 +30,73 @@
  * To install ONNX on your system, follow the instructions in the
  * README.md in with this plugin.
  *
- * ## Example launch command:
+ * ## Example launch line
  *
- * Test image file, model file (SSD) and label file can be found here :
+ * Test image file, model file (SSD) and label file can be found here:
  * https://gitlab.collabora.com/gstreamer/onnx-models
  *
+ * |[
  * GST_DEBUG=ssdobjectdetector:5 \
  * gst-launch-1.0 filesrc location=onnx-models/images/bus.jpg ! \
- * jpegdec ! videoconvert ! onnxinference execution-provider=cpu model-file=onnx-models/models/ssd_mobilenet_v1_coco.onnx !  \
- * ssdobjectdetector label-file=onnx-models/labels/COCO_classes.txt  ! videoconvert ! imagefreeze ! autovideosink
- *
+ * jpegdec ! videoconvert ! onnxinference execution-provider=cpu model-file=onnx-models/models/ssd_mobilenet_v1_coco.onnx ! \
+ * ssdobjectdetector label-file=onnx-models/labels/COCO_classes.txt ! videoconvert ! imagefreeze ! autovideosink
+ * ]|
  *
  * Note: in order for downstream tensor decoders to correctly parse the tensor
- * data in the GstTensorMeta, meta data must be attached to the ONNX model
- * assigning a unique string id to each output layer. These unique string ids
- * and corresponding GQuark ids are currently stored in the tensor decoder's
- * header file, in this case gstssdobjectdetector.h. If the meta data is absent,
- * the pipeline will fail.
+ * data in the GstTensorMeta, meta data must be attached to tensors. The
+ * inference element gets this model metadata from the modelinfo file annexed
+ * to the model. The modelinfo-helper tool can be used to create a modelinfo
+ * file: https://gitlab.freedesktop.org/gstreamer/gstreamer/-/tree/main/subprojects/gst-devtools/modelinfo-helper
  *
- * As a convenience, there is a python script
- * currently stored at
- * https://gitlab.collabora.com/gstreamer/onnx-models/-/blob/master/scripts/modify_onnx_metadata.py
- * to enable users to easily add and remove meta data from json files. It can also dump
- * the names of all output layers, which can then be used to craft the json meta data file.
+ * ## Modelinfo example for ssd_mobilenet_v1_coco.onnx
+ *
+ * |[
+ * [modelinfo]
+ * version=1.0
+ * group-id=ssd-mobilenet-v1-variant-1-out
+ *
+ * [image_tensor:0]
+ * id=image_tensor_0
+ * type=uint8
+ * dims=-1,-1,-1,3
+ * dir=input
+ * ranges=0.0,255.0;0.0,255.0;0.0,255.0
+ *
+ * [detection_boxes:0]
+ * id=ssd-mobilenet-v1-variant-1-out-boxes
+ * type=float32
+ * dims=-1,-1,4
+ * dir=output
+ *
+ * [detection_classes:0]
+ * id=ssd-mobilenet-v1-variant-1-out-classes
+ * type=float32
+ * dims=-1,-1
+ * dir=output
+ *
+ * [detection_scores:0]
+ * id=ssd-mobilenet-v1-variant-1-out-scores
+ * type=float32
+ * dims=-1,-1
+ * dir=output
+ *
+ * [num_detections:0]
+ * id=generic-variant-1-out-count
+ * type=float32
+ * dims=-1
+ * dir=output
+ * ]|
+ *
+ * The modelinfo file should be placed alongside the model file with a
+ * `.modelinfo` suffix appended to the model filename. For example:
+ *
+ * |[
+ * /path/to/model.onnx
+ * /path/to/model.onnx.modelinfo
+ * ]|
+ *
+ * As a convenience, sample models with their modelinfo files are available
+ * here: https://gitlab.collabora.com/gstreamer/onnx-models/-/tree/master/models
  *
  * Since: 1.20
  */
@@ -117,7 +161,6 @@ struct _GstOnnxInference
   bool fixedInputImageSize;
   double *scales;
   double *offsets;
-  gsize num_channels;
 };
 
 static const OrtApi *api = NULL;
@@ -192,7 +235,7 @@ gst_onnx_optimization_level_get_type (void)
       {GST_ONNX_OPTIMIZATION_LEVEL_DISABLE_ALL, "Disable all optimization",
           "disable-all"},
       {GST_ONNX_OPTIMIZATION_LEVEL_ENABLE_BASIC,
-            "Enable basic optimizations (redundant node removals))",
+            "Enable basic optimizations (redundant node removals)",
           "enable-basic"},
       {GST_ONNX_OPTIMIZATION_LEVEL_ENABLE_EXTENDED,
             "Enable extended optimizations (redundant node removals + node fusions)",
@@ -230,6 +273,14 @@ gst_onnx_execution_provider_get_type (void)
           "cuda"},
 #endif
 #ifdef HAVE_VSI_NPU
+      /**
+       * GstOnnxExecutionProvider::vsi
+       *
+       * VeriSilicon NPU execution provider
+       *
+       * Since: 1.28
+       */
+
       {GST_ONNX_EXECUTION_PROVIDER_VSI,
             "VeriSilicon NPU execution provider",
           "vsi"},
@@ -346,7 +397,6 @@ gst_onnx_inference_init (GstOnnxInference * self)
 
   self->scales = NULL;
   self->offsets = NULL;
-  self->num_channels = 0;
 
   self->height_dim = -1;
   self->width_dim = -1;
@@ -362,6 +412,7 @@ gst_onnx_inference_finalize (GObject * object)
 {
   GstOnnxInference *self = GST_ONNX_INFERENCE (object);
 
+  g_free (self->dest);
   g_free (self->model_file);
   g_free (self->scales);
   g_free (self->offsets);
@@ -600,8 +651,8 @@ gst_onnx_log_function (void *param, OrtLoggingLevel severity,
       break;
   }
 
-  gst_debug_log (onnx_runtime_debug, level, code_location,
-      "gst_onnx_log_function", 0, obj, "%s", message);
+  GST_CAT_LEVEL_LOG (onnx_runtime_debug, level, obj,
+      "%s: %s", code_location, message);
 }
 
 /* FIXME: This is copied from Gsttfliteinference and we should create something
@@ -717,6 +768,7 @@ gst_onnx_inference_start (GstBaseTransform * trans)
   OrtStatus *status = NULL;
   OrtSessionOptions *session_options = NULL;
   OrtTypeInfo *input_type_info = NULL;
+  size_t input_count = 0;
   const OrtTensorTypeAndShapeInfo *input_tensor_info = NULL;
   GraphOptimizationLevel onnx_optim;
   size_t num_input_dims;
@@ -728,7 +780,8 @@ gst_onnx_inference_start (GstBaseTransform * trans)
   GstAnalyticsModelInfo *modelinfo = NULL;
   const gchar *onnx_input_tensor_name = NULL;
   gchar *tensor_name = NULL;
-
+  gdouble *input_mins;
+  gdouble *input_maxs;
 
   GST_OBJECT_LOCK (self);
   if (self->session) {
@@ -880,6 +933,19 @@ gst_onnx_inference_start (GstBaseTransform * trans)
         api->GetErrorMessage (status));
     goto error;
   }
+  // Get input count
+  status = api->SessionGetInputCount (self->session, &input_count);
+  if (status) {
+    GST_ERROR_OBJECT (self, "Failed to get input count: %s",
+        api->GetErrorMessage (status));
+    goto error;
+  }
+
+  if (input_count != 1) {
+    GST_ERROR_OBJECT (self, "Only models with 1 input tensor are supported,"
+        " but model has %zu inputs", input_count);
+    goto error;
+  }
   // Get input info
   status = api->SessionGetInputTypeInfo (self->session, 0, &input_type_info);
   if (status) {
@@ -1002,61 +1068,33 @@ gst_onnx_inference_start (GstBaseTransform * trans)
 
   /* Get per-channel scales and offsets from modelinfo */
   /* For video input, we assume uint8 pixel values in range [0, 255] */
-  {
-    gdouble *input_mins = NULL;
-    gdouble *input_maxs = NULL;
-    gsize num_target_ranges;
-    gsize j;
-
-    /* First, get the number of target ranges from modelinfo to allocate input ranges */
-    if (!gst_analytics_modelinfo_get_target_ranges (modelinfo, tensor_name,
-            &num_target_ranges, &input_mins, &input_maxs)) {
-      GST_ERROR_OBJECT (self,
-          "Failed to get target ranges from modelinfo for tensor %s",
-          tensor_name);
-      g_free (tensor_name);
-      if (onnx_input_tensor_name)
-        self->allocator->Free (self->allocator,
-            (char *) onnx_input_tensor_name);
-      goto error;
-    }
-
-    /* Free the target ranges - we only needed them to know the count */
-    g_free (input_mins);
-    g_free (input_maxs);
-
-    /* Prepare input ranges - for video uint8 input, range is [0, 255] for all channels */
-    input_mins = g_new (gdouble, num_target_ranges);
-    input_maxs = g_new (gdouble, num_target_ranges);
-    for (j = 0; j < num_target_ranges; j++) {
-      input_mins[j] = 0.0;
-      input_maxs[j] = 255.0;
-    }
-
-    if (!gst_analytics_modelinfo_get_input_scales_offsets (modelinfo,
-            tensor_name, num_target_ranges, input_mins, input_maxs,
-            &self->num_channels, &self->scales, &self->offsets)) {
-      GST_ERROR_OBJECT (self, "Failed to get scales/offsets for tensor %s",
-          tensor_name);
-      g_free (input_mins);
-      g_free (input_maxs);
-      g_free (tensor_name);
-      if (onnx_input_tensor_name)
-        self->allocator->Free (self->allocator,
-            (char *) onnx_input_tensor_name);
-      goto error;
-    }
-
-    g_free (input_mins);
-    g_free (input_maxs);
+  input_mins = g_alloca (sizeof (gdouble) * self->channels);
+  input_maxs = g_alloca (sizeof (gdouble) * self->channels);
+  for (i = 0; i < self->channels; i++) {
+    input_mins[i] = 0.0;
+    input_maxs[i] = 255.0;
   }
 
-  GST_INFO_OBJECT (self, "Input tensor normalization: %zu channel(s)",
-      self->num_channels);
-  for (i = 0; i < self->num_channels; i++) {
+  if (!gst_analytics_modelinfo_get_input_scales_offsets (modelinfo,
+          tensor_name, self->channels, input_mins, input_maxs,
+          NULL, &self->scales, &self->offsets)) {
+    GST_ERROR_OBJECT (self, "Failed to get scales/offsets for tensor %s",
+        tensor_name);
+    g_free (tensor_name);
+    if (onnx_input_tensor_name)
+      self->allocator->Free (self->allocator, (char *) onnx_input_tensor_name);
+    goto error;
+  }
+
+  GST_INFO_OBJECT (self, "Input tensor normalization: %u channel(s)",
+      self->channels);
+  for (i = 0; i < self->channels; i++) {
     GST_DEBUG_OBJECT (self, "  Channel[%zu]: scale=%f, offset=%f", i,
         self->scales[i], self->offsets[i]);
   }
+
+  gst_caps_set_simple (self->input_tensors_caps, "pixel-aspect-ratio",
+      GST_TYPE_FRACTION, 1, 1, NULL);
 
   g_free (tensor_name);
   if (onnx_input_tensor_name)
@@ -1068,7 +1106,7 @@ gst_onnx_inference_start (GstBaseTransform * trans)
   /* Check if all channels are passthrough (scale=1.0, offset=0.0) */
   gboolean is_passthrough = TRUE;
   if (self->scales && self->offsets) {
-    for (i = 0; i < self->num_channels; i++) {
+    for (i = 0; i < self->channels; i++) {
       if (self->scales[i] != 1.0 || self->offsets[i] != 0.0) {
         is_passthrough = FALSE;
         break;
@@ -1612,7 +1650,7 @@ gst_onnx_inference_transform_ip (GstBaseTransform * trans, GstBuffer * buf)
   /* Check if all channels are passthrough (scale=1.0, offset=0.0) */
   gboolean is_passthrough_transform = TRUE;
   if (self->scales && self->offsets) {
-    for (gsize c = 0; c < self->num_channels; c++) {
+    for (gsize c = 0; c < self->channels; c++) {
       if (self->scales[c] != 1.0 || self->offsets[c] != 0.0) {
         is_passthrough_transform = FALSE;
         break;

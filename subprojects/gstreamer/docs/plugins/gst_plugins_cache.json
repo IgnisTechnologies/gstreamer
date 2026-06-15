@@ -1001,6 +1001,18 @@
                         "readable": true,
                         "type": "gboolean",
                         "writable": true
+                    },
+                    "share-deny-mode": {
+                        "blurb": "File sharing mode to use while writing, Windows only",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "deny-no (64)",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "GstFileSinkShareDenyMode",
+                        "writable": true
                     }
                 },
                 "rank": "primary"
@@ -2736,6 +2748,31 @@
                     }
                 ]
             },
+            "GstFileSinkShareDenyMode": {
+                "kind": "enum",
+                "values": [
+                    {
+                        "desc": "Deny read/write access (SH_DENYRW)",
+                        "name": "deny-rw",
+                        "value": "16"
+                    },
+                    {
+                        "desc": "Deny write access (SH_DENYWR)",
+                        "name": "deny-w",
+                        "value": "32"
+                    },
+                    {
+                        "desc": "Deny read access (SH_DENYRD)",
+                        "name": "deny-r",
+                        "value": "48"
+                    },
+                    {
+                        "desc": "Allow read/write access (SH_DENYNO)",
+                        "name": "deny-no",
+                        "value": "64"
+                    }
+                ]
+            },
             "GstInputSelectorSyncMode": {
                 "kind": "enum",
                 "values": [
@@ -2966,7 +3003,63 @@
         "elements": {},
         "filename": "gstcoretracers",
         "license": "LGPL",
-        "other-types": {},
+        "other-types": {
+            "GstDotsTracerFeatures": {
+                "kind": "flags",
+                "values": [
+                    {
+                        "desc": "Disable pipeline-snapshot tracer composition",
+                        "name": "dump",
+                        "value": "0x00000001"
+                    },
+                    {
+                        "desc": "Enable pipeline-snapshot tracer composition",
+                        "name": "snapshot",
+                        "value": "0x00000002"
+                    }
+                ]
+            },
+            "GstLatencyTracerFlags": {
+                "kind": "flags",
+                "values": [
+                    {
+                        "desc": "Trace pipeline latency",
+                        "name": "pipeline",
+                        "value": "0x00000001"
+                    },
+                    {
+                        "desc": "Trace per-element latency",
+                        "name": "element",
+                        "value": "0x00000002"
+                    },
+                    {
+                        "desc": "Trace reported element latency",
+                        "name": "reported",
+                        "value": "0x00000004"
+                    }
+                ]
+            },
+            "GstLeaksStackTraceFlags": {
+                "kind": "flags",
+                "values": [
+                    {
+                        "desc": "Disabled",
+                        "name": "disabled",
+                        "value": "0xffffffff"
+                    },
+                    {
+                        "desc": "None",
+                        "name": "none",
+                        "value": "0x00000000"
+                    },
+                    {
+                        "desc": "Full",
+                        "name": "full",
+                        "value": "0x00000001"
+                    }
+                ]
+            }
+        },
         "package": "GStreamer",
         "source": "gstreamer",
         "tracers": {

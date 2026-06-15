@@ -53,6 +53,8 @@ gst_video_format_from_cvpixelformat (int fmt)
     case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
     case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
       return GST_VIDEO_FORMAT_NV12;
+    case kCVPixelFormatType_420YpCbCr8VideoRange_8A_TriPlanar:
+      return GST_VIDEO_FORMAT_AV12;
     case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange:
     case kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
       return GST_VIDEO_FORMAT_P010_10LE;
@@ -86,6 +88,8 @@ gst_video_format_to_cvpixelformat (GstVideoFormat fmt)
       return kCVPixelFormatType_420YpCbCr8Planar;
     case GST_VIDEO_FORMAT_NV12:
       return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+    case GST_VIDEO_FORMAT_AV12:
+      return kCVPixelFormatType_420YpCbCr8VideoRange_8A_TriPlanar;
     case GST_VIDEO_FORMAT_P010_10LE:
       return kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange;
     case GST_VIDEO_FORMAT_UYVY:
@@ -112,6 +116,25 @@ gst_video_format_to_cvpixelformat (GstVideoFormat fmt)
       g_assert_not_reached ();
       return -1;
   }
+}
+
+GstCaps *
+gst_applemedia_copy_caps_with_feature (GstCaps * caps, const gchar * feature)
+{
+  GstCaps *copy;
+  guint n_structs;
+
+  g_return_val_if_fail (caps != NULL, NULL);
+  g_return_val_if_fail (feature != NULL, NULL);
+
+  copy = gst_caps_copy (caps);
+
+  n_structs = gst_caps_get_size (copy);
+  for (guint i = 0; i < n_structs; i++)
+    gst_caps_set_features (copy, i, gst_caps_features_new_static_str (feature,
+            NULL));
+
+  return copy;
 }
 
 void
