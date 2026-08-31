@@ -89,6 +89,7 @@ LONG_VALGRIND_TESTS = [
 VALGRIND_BLACKLIST = [
     (r'check.gstreamer.gst_gstsystemclock.test_stress_cleanup_unschedule', '?'),
     (r'check.gstreamer.gst_gstsystemclock.test_stress_reschedule', '?'),
+    (r'check.gstreamer.gst_gsttracerdeinit', 'leaks a bin on purpose to check the leaks tracer report at gst_deinit()'),
     (r'check.gstreamer.tools_gstinspect', '?'),
     (r'check.gst-plugins-base.elements_videoscale', '?'),
     (r'check.gst-plugins-base.pipelines_gl_launch_lines', '?'),
@@ -105,7 +106,6 @@ VALGRIND_BLACKLIST = [
     (r'check.gst-plugins-bad.elements_mpeg2enc', '?'),
     (r'check.gst-plugins-bad.elements_mplex', '?'),
     (r'check.gst-plugins-bad.elements_mxfmux', '?'),
-    (r'check.gst-plugins-bad.elements_srt.test_src_listener_sink_caller', 'Need to investigate libsrt leaks (flaky)'),
     (r'check.gst-plugins-bad.elements_x265enc', '?'),
     (r'check.gst-plugins-bad.elements_zbar', '?'),
     (r'check.gst-plugins-bad.elements_webrtcbin.test_data_channel_remote_notify', 'Need to fix leaks'),

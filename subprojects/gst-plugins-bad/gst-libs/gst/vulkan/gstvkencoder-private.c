@@ -1079,7 +1079,7 @@ gst_vulkan_encoder_encode (GstVulkanEncoder * self, GstVideoInfo * info,
   VkVideoEndCodingInfoKHR end_coding;
   VkVideoReferenceSlotInfoKHR ref_slots[37];
   GstVulkanCommandBuffer *cmd_buf;
-  GArray *barriers;
+  GstVulkanBarrierState *barriers;
   VkVideoEncodeQualityLevelInfoKHR quality_info;
   VkVideoEncodeRateControlLayerInfoKHR rc_layer;
   VkVideoEncodeRateControlInfoKHR rc_info;
@@ -1088,10 +1088,6 @@ gst_vulkan_encoder_encode (GstVulkanEncoder * self, GstVideoInfo * info,
   g_return_val_if_fail (info != NULL && pic != NULL, FALSE);
 
   priv = gst_vulkan_encoder_get_instance_private (self);
-
-  /* initialize the vulkan operation */
-  if (!gst_vulkan_operation_begin (priv->exec, &err))
-    goto bail;
 
   _setup_rate_control (self, pic, info, &rc_info, &rc_layer);
 
@@ -1165,6 +1161,11 @@ gst_vulkan_encoder_encode (GstVulkanEncoder * self, GstVideoInfo * info,
   };
   /* *INDENT-ON* */
 
+again:
+  /* initialize the vulkan operation */
+  if (!gst_vulkan_operation_begin (priv->exec, &err))
+    goto bail;
+
   cmd_buf = priv->exec->cmd_buf;
   priv->vk.CmdBeginVideoCoding (cmd_buf->cmd, &begin_coding);
 
@@ -1175,7 +1176,6 @@ gst_vulkan_encoder_encode (GstVulkanEncoder * self, GstVideoInfo * info,
    */
   if (priv->session_reset) {
     priv->vk.CmdControlVideoCoding (cmd_buf->cmd, &coding_ctrl);
-    priv->session_reset = FALSE;
   }
 
   /* Peek the output memory to be used by VkVideoEncodeInfoKHR.dstBuffer */
@@ -1216,36 +1216,31 @@ gst_vulkan_encoder_encode (GstVulkanEncoder * self, GstVideoInfo * info,
   priv->callbacks.setup_codec_pic (pic, &encode_info,
       priv->callbacks_user_data);
 
-  gst_vulkan_operation_add_dependency_frame (priv->exec, pic->in_buffer,
-      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-      VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR);
-  gst_vulkan_operation_add_frame_barrier (priv->exec, pic->in_buffer,
-      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-      VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
-      VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
-      VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR, NULL);
+  if (!gst_vulkan_operation_add_dependency_frame (priv->exec, pic->in_buffer,
+          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+          VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR))
+    goto reset_and_error;
+  if (!gst_vulkan_operation_add_frame_barrier (priv->exec, pic->in_buffer,
+          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+          VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+          VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
+          VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR, NULL))
+    goto reset_and_error;
 
-  gst_vulkan_operation_add_dependency_frame (priv->exec, pic->dpb_buffer,
-      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-      VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR);
-  gst_vulkan_operation_add_frame_barrier (priv->exec, pic->dpb_buffer,
-      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-      VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
-      VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
-      VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR, NULL);
+  if (!gst_vulkan_operation_add_dependency_frame (priv->exec, pic->dpb_buffer,
+          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+          VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR))
+    goto reset_and_error;
+  if (!gst_vulkan_operation_add_frame_barrier (priv->exec, pic->dpb_buffer,
+          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+          VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+          VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR,
+          VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR, NULL))
+    goto reset_and_error;
 
-  barriers = gst_vulkan_operation_retrieve_image_barriers (priv->exec);
-
-  /* *INDENT-OFF* */
-  vkCmdPipelineBarrier2 (cmd_buf->cmd, &(VkDependencyInfo) {
-      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-      .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
-      .pImageMemoryBarriers = (VkImageMemoryBarrier2 *) barriers->data,
-      .imageMemoryBarrierCount = barriers->len,
-      }
-  );
-  /* *INDENT-ON* */
-  g_array_unref (barriers);
+  barriers = gst_vulkan_operation_get_barriers (priv->exec);
+  gst_vulkan_barrier_state_pipeline_barrier (barriers, cmd_buf,
+      VK_DEPENDENCY_BY_REGION_BIT);
 
   gst_vulkan_operation_begin_query (priv->exec,
       (VkBaseInStructure *) & encode_info, 0);
@@ -1263,10 +1258,20 @@ gst_vulkan_encoder_encode (GstVulkanEncoder * self, GstVideoInfo * info,
   priv->vk.CmdEndVideoCoding (cmd_buf->cmd, &end_coding);
 
   if (!gst_vulkan_operation_end (priv->exec, &err)) {
+    if (g_error_matches (err, GST_VULKAN_ERROR, VK_ERROR_OUT_OF_DATE_KHR)) {
+      GST_DEBUG_OBJECT (self, "Detected a synchronisation hazard, retrying");
+      g_clear_error (&err);
+      goto again;
+    }
     GST_ERROR_OBJECT (self, "The operation did not complete properly: %s",
         err->message);
     goto bail;
   }
+
+  if (priv->session_reset) {
+    priv->session_reset = FALSE;
+  }
+
   /* Wait the operation to complete or we might have a failing query */
   gst_vulkan_operation_wait (priv->exec);
 
@@ -1295,6 +1300,12 @@ bail:
   {
     if (err)
       g_error_free (err);
+    return FALSE;
+  }
+reset_and_error:
+  {
+    GST_WARNING_OBJECT (self, "Failed barrier operation");
+    gst_vulkan_operation_reset (priv->exec);
     return FALSE;
   }
 }

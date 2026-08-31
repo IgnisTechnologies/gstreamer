@@ -30,7 +30,6 @@
 
 /* TODO:
  * - Add support for other AOT / profiles
- * - Signal encoder delay
  * - LOAS / LATM support
  */
 
@@ -549,6 +548,13 @@ gst_fdkaacenc_set_format (GstAudioEncoder * enc, GstAudioInfo * info)
   gst_audio_encoder_set_frame_max (enc, 1);
   gst_audio_encoder_set_frame_samples_min (enc, enc_info.frameLength);
   gst_audio_encoder_set_frame_samples_max (enc, enc_info.frameLength);
+
+  self->encoder_delay = enc_info.nDelay;
+  gst_audio_encoder_set_latency (enc, gst_util_uint64_scale (enc_info.nDelay,
+          GST_SECOND, GST_AUDIO_INFO_RATE (info)),
+      gst_util_uint64_scale (enc_info.nDelay + enc_info.frameLength,
+          GST_SECOND, GST_AUDIO_INFO_RATE (info)));
+
   gst_audio_encoder_set_hard_min (enc, FALSE);
   self->outbuf_size = enc_info.maxOutBufBytes;
   self->samples_per_frame = enc_info.frameLength;
@@ -685,7 +691,17 @@ gst_fdkaacenc_handle_frame (GstAudioEncoder * enc, GstBuffer * inbuf)
   gst_buffer_unmap (outbuf, &omap);
   gst_buffer_set_size (outbuf, out_args.numOutBytes);
 
-  ret = gst_audio_encoder_finish_frame (enc, outbuf, self->samples_per_frame);
+  gint nsamples;
+  if (self->encoder_delay >= self->samples_per_frame) {
+    nsamples = 0;
+    self->encoder_delay -= self->samples_per_frame;
+  } else if (self->encoder_delay) {
+    nsamples = self->samples_per_frame - self->encoder_delay;
+    self->encoder_delay = 0;
+  } else {
+    nsamples = self->samples_per_frame;
+  }
+  ret = gst_audio_encoder_finish_frame (enc, outbuf, nsamples);
   outbuf = NULL;
 
 out:
@@ -723,6 +739,7 @@ gst_fdkaacenc_init (GstFdkAacEnc * self)
   self->enc = NULL;
   self->is_drained = TRUE;
   self->afterburner = FALSE;
+  self->encoder_delay = 0;
   self->peak_bitrate = DEFAULT_PEAK_BITRATE;
   self->rate_control = DEFAULT_RATE_CONTROL;
   self->vbr_preset = DEFAULT_VBR_PRESET;

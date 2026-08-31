@@ -17,7 +17,6 @@ option('bayer', type : 'feature', value : 'auto')
 option('camerabin2', type : 'feature', value : 'auto')
 option('closedcaption', type : 'feature', value : 'auto')
 option('codecalpha', type : 'feature', value : 'auto')
-option('codectimestamper', type : 'feature', value : 'auto')
 option('coloreffects', type : 'feature', value : 'auto')
 option('debugutils', type : 'feature', value : 'auto')
 option('dvbsubenc', type : 'feature', value : 'auto')
@@ -265,6 +264,9 @@ option('nvds-include-path', type: 'string', value : '',
        description : 'DeepStream SDK include directory')
 option('nvds-lib-path', type: 'string', value : '',
        description : 'DeepStream SDK library directory')
+
+# onnx plugin options
+option('onnx-winml', type : 'feature', value : 'disabled', description : 'Use Microsoft.Windows.AI.MachineLearning package')
 
 # QSV plugin options
 option('mfx-modules-dir', type: 'string', value : '',

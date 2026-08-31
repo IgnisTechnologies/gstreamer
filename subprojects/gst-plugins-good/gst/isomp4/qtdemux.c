@@ -220,7 +220,7 @@ struct _QtDemuxSegment
   /* global time and duration, all gst time */
   GstClockTime time;            /* global PTS at which the segment starts playing */
   GstClockTime stop_time;       /* global PTS at which the segment finishes playing */
-  GstClockTime duration;
+  GstClockTime duration;        /* -1 if the segment extends to the end of the track media */
   /* media time of trak, all gst time */
   GstClockTime media_start;
   GstClockTime media_stop;
@@ -335,6 +335,12 @@ static GstStateChangeReturn gst_qtdemux_change_state (GstElement * element,
     GstStateChange transition);
 static void gst_qtdemux_set_context (GstElement * element,
     GstContext * context);
+static gboolean gst_qtdemux_element_query (GstElement * element,
+    GstQuery * query);
+static gboolean gst_qtdemux_handle_src_query (GstPad * pad, GstObject * parent,
+    GstQuery * query);
+static gboolean gst_qtdemux_query (GstQTDemux * qtdemux, GstPad * pad,
+    GstQuery * query);
 static gboolean qtdemux_sink_activate (GstPad * sinkpad, GstObject * parent);
 static gboolean qtdemux_sink_activate_mode (GstPad * sinkpad,
     GstObject * parent, GstPadMode mode, gboolean active);
@@ -476,6 +482,7 @@ gst_qtdemux_class_init (GstQTDemuxClass * klass)
   gstelement_class->get_index = GST_DEBUG_FUNCPTR (gst_qtdemux_get_index);
 #endif
   gstelement_class->set_context = GST_DEBUG_FUNCPTR (gst_qtdemux_set_context);
+  gstelement_class->query = GST_DEBUG_FUNCPTR (gst_qtdemux_element_query);
 
   gst_tag_register_musicbrainz_tags ();
 
@@ -755,24 +762,63 @@ gst_qtdemux_get_duration (GstQTDemux * qtdemux, GstClockTime * duration)
 }
 
 static gboolean
+gst_qtdemux_element_query (GstElement * element, GstQuery * query)
+{
+  GstQTDemux *qtdemux = GST_QTDEMUX (element);
+
+  GST_LOG_OBJECT (qtdemux, "%s query", GST_QUERY_TYPE_NAME (query));
+
+  return gst_qtdemux_query (qtdemux, NULL, query);
+}
+
+static gboolean
 gst_qtdemux_handle_src_query (GstPad * pad, GstObject * parent,
     GstQuery * query)
 {
-  gboolean res = FALSE;
   GstQTDemux *qtdemux = GST_QTDEMUX (parent);
 
   GST_LOG_OBJECT (pad, "%s query", GST_QUERY_TYPE_NAME (query));
 
+  return gst_qtdemux_query (qtdemux, pad, query);
+}
+
+static gboolean
+gst_qtdemux_query (GstQTDemux * qtdemux, GstPad * pad, GstQuery * query)
+{
+  gboolean res = FALSE;
+  guint i;
+
   switch (GST_QUERY_TYPE (query)) {
     case GST_QUERY_POSITION:{
       GstFormat fmt;
+      gint64 position;
 
       gst_query_parse_position (query, &fmt, NULL);
-      if (fmt == GST_FORMAT_TIME
-          && GST_CLOCK_TIME_IS_VALID (qtdemux->segment.position)) {
-        gst_query_set_position (query, GST_FORMAT_TIME,
-            qtdemux->segment.position);
-        res = TRUE;
+
+      if (fmt == GST_FORMAT_TIME) {
+        if (pad) {
+          QtDemuxStream *stream;
+
+          for (i = 0; i < QTDEMUX_N_STREAMS (qtdemux); i++) {
+            stream = QTDEMUX_NTH_STREAM (qtdemux, i);
+
+            if (stream->pad && (pad == stream->pad)
+                && GST_CLOCK_TIME_IS_VALID (stream->segment.position)) {
+              position =
+                  gst_segment_to_stream_time (&stream->segment, GST_FORMAT_TIME,
+                  stream->segment.position);
+              gst_query_set_position (query, GST_FORMAT_TIME, position);
+              res = TRUE;
+              break;
+            }
+          }
+        }
+
+        if (!res && GST_CLOCK_TIME_IS_VALID (qtdemux->segment.position)) {
+          gst_query_set_position (query, GST_FORMAT_TIME,
+              qtdemux->segment.position);
+          res = TRUE;
+        }
       }
     }
       break;
@@ -782,7 +828,37 @@ gst_qtdemux_handle_src_query (GstPad * pad, GstObject * parent,
       gst_query_parse_duration (query, &fmt, NULL);
       if (fmt == GST_FORMAT_TIME) {
         /* First try to query upstream */
-        res = gst_pad_query_default (pad, parent, query);
+        res = gst_pad_peer_query (qtdemux->sinkpad, query);
+
+        if (pad) {
+          QtDemuxStream *stream;
+
+          if (!res) {
+            for (i = 0; i < QTDEMUX_N_STREAMS (qtdemux); i++) {
+              stream = QTDEMUX_NTH_STREAM (qtdemux, i);
+
+              if (stream->pad && (pad == stream->pad)) {
+                if (qtdemux->gapless_audio_info.type !=
+                    GAPLESS_AUDIO_INFO_TYPE_NONE) {
+                  gst_query_set_duration (query, GST_FORMAT_TIME,
+                      qtdemux->gapless_audio_info.valid_duration);
+                  res = TRUE;
+                } else if (stream->n_segments > 0) {
+                  GstClockTime stream_duration =
+                      stream->segments[stream->n_segments - 1].stop_time;
+
+                  if (GST_CLOCK_TIME_IS_VALID (stream_duration)) {
+                    gst_query_set_duration (query, GST_FORMAT_TIME,
+                        stream_duration);
+                    res = TRUE;
+                  }
+                }
+                break;
+              }
+            }
+          }
+        }
+
         if (!res) {
           GstClockTime duration;
           if (gst_qtdemux_get_duration (qtdemux, &duration) && duration > 0) {
@@ -822,7 +898,7 @@ gst_qtdemux_handle_src_query (GstPad * pad, GstObject * parent,
       }
 
       /* try upstream first */
-      res = gst_pad_query_default (pad, parent, query);
+      res = gst_pad_query_default (pad, GST_OBJECT_CAST (qtdemux), query);
 
       if (!res) {
         gst_query_parse_seeking (query, &fmt, NULL, NULL, NULL);
@@ -869,7 +945,12 @@ gst_qtdemux_handle_src_query (GstPad * pad, GstObject * parent,
       break;
     }
     default:
-      res = gst_pad_query_default (pad, parent, query);
+      if (pad)
+        res = gst_pad_query_default (pad, GST_OBJECT_CAST (qtdemux), query);
+      else
+        res =
+            GST_ELEMENT_CLASS (parent_class)->query (GST_ELEMENT_CAST (qtdemux),
+            query);
       break;
   }
 
@@ -7070,7 +7151,7 @@ static GstFlowReturn
 gst_qtdemux_decorate_and_push_buffer (GstQTDemux * qtdemux,
     QtDemuxStream * stream, GstBuffer * buf,
     guint64 dts, guint64 pts, guint64 duration, gboolean round_up_duration,
-    gboolean keyframe, guint64 position, guint64 byte_position)
+    gboolean keyframe, GstClockTime position, guint64 byte_position)
 {
   GstFlowReturn ret = GST_FLOW_OK;
 
@@ -7100,7 +7181,7 @@ gst_qtdemux_decorate_and_push_buffer (GstQTDemux * qtdemux,
 
   /* position reporting */
   if (qtdemux->segment.rate >= 0) {
-    qtdemux->segment.position = QTSTREAMTIME_TO_GSTTIME (stream, position);
+    qtdemux->segment.position = position;
     gst_qtdemux_sync_streams (qtdemux);
   }
 
@@ -7634,8 +7715,7 @@ gst_qtdemux_loop_state_movie (GstQTDemux * qtdemux)
   }
 
   ret = gst_qtdemux_decorate_and_push_buffer (qtdemux, stream, buf,
-      dts, pts, duration, round_up_duration, keyframe,
-      GSTTIME_TO_QTSTREAMTIME (stream, min_time), offset);
+      dts, pts, duration, round_up_duration, keyframe, min_time, offset);
 
   if (size < sample_size) {
     QtDemuxSample *sample = &stream->samples[stream->sample_index];
@@ -8846,12 +8926,13 @@ gst_qtdemux_process_adapter (GstQTDemux * demux, gboolean force)
         sample = &stream->samples[stream->sample_index];
 
         if (G_LIKELY (!(STREAM_IS_EOS (stream)))) {
-          GstClockTime global_dts;
+          GstClockTime global_dts_gst, dts_gst;
 
           GST_DEBUG_OBJECT (demux, "stream : %" GST_FOURCC_FORMAT,
               GST_FOURCC_ARGS (CUR_STREAM (stream)->fourcc));
 
           dts = QTSAMPLE_DTS_STREAMTIME (sample);
+          dts_gst = QTSAMPLE_DTS (stream, sample);
           pts = QTSAMPLE_PTS_STREAMTIME (sample);
           duration = QTSAMPLE_DUR_STREAMTIME (sample, dts);
           round_up_duration = QTSAMPLE_DUR_ROUND_UP (stream, sample);
@@ -8864,20 +8945,18 @@ gst_qtdemux_process_adapter (GstQTDemux * demux, gboolean force)
             segment = &stream->segments[stream->segment_index];
 
             /* Need to convert from time inside the media segment to global time */
-            global_dts =
-                (dts >=
-                segment->media_start) ? ((dts - segment->media_start) +
-                segment->time) : 0;
+            global_dts_gst = (dts_gst >= segment->media_start)
+                ? ((dts_gst - segment->media_start) + segment->time) : 0;
           } else {
-            global_dts = dts;
+            global_dts_gst = dts_gst;
           }
 
           /* Check whether we're after the seek segment stop now. This check uses
            * DTS instead of PTS to make sure no future samples have a PTS before
            * the segment stop. */
           if (G_UNLIKELY (demux->segment.stop != -1
-                  && global_dts != GST_CLOCK_TIME_NONE
-                  && demux->segment.stop <= global_dts
+                  && global_dts_gst != GST_CLOCK_TIME_NONE
+                  && demux->segment.stop <= global_dts_gst
                   && stream->segment.rate >= 0)) {
             GST_DEBUG_OBJECT (demux, "we reached the end of our segment.");
             stream->cur_global_pts = GST_CLOCK_TIME_NONE;       /* this means EOS */
@@ -8904,7 +8983,7 @@ gst_qtdemux_process_adapter (GstQTDemux * demux, gboolean force)
             g_return_val_if_fail (outbuf != NULL, GST_FLOW_ERROR);
 
             ret = gst_qtdemux_decorate_and_push_buffer (demux, stream, outbuf,
-                dts, pts, duration, round_up_duration, keyframe, dts,
+                dts, pts, duration, round_up_duration, keyframe, global_dts_gst,
                 demux->offset);
           }
 
@@ -20357,7 +20436,8 @@ qtdemux_audio_caps (GstQTDemux * qtdemux, QtDemuxStream * stream,
     case GST_MAKE_FOURCC ('a', 'c', '-', '4'):
     {
       _codec ("AC4");
-      caps = gst_caps_new_empty_simple ("audio/x-ac4");
+      caps = gst_caps_new_simple ("audio/x-ac4",
+          "stream-format", G_TYPE_STRING, "raw", NULL);
       break;
     }
     case FOURCC_mha1:

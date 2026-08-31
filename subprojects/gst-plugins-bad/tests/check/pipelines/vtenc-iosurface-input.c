@@ -23,7 +23,7 @@
 
 #include <gst/check/gstcheck.h>
 #include <gst/app/gstappsrc.h>
-#include <gst/iosurface/gstiosurface.h>
+#include <gst/allocators/gstiosurface.h>
 #include <gst/video/video.h>
 #include <TargetConditionals.h>
 #if TARGET_OS_OSX
@@ -142,7 +142,7 @@ test_iosurface_memory_free (GstAllocator * allocator, GstMemory * gmem)
 
 static gboolean
 test_iosurface_memory_query_surface (GstMemory * gmem, IOSurfaceRef * surface,
-    guint * plane)
+    guint * plane, G_GNUC_UNUSED gpointer user_data)
 {
   TestIOSurfaceMemory *mem = (TestIOSurfaceMemory *) gmem;
 
@@ -182,7 +182,7 @@ ensure_test_allocator (void)
     test_allocator = g_object_new (TEST_TYPE_IOSURFACE_ALLOCATOR, NULL);
     gst_object_ref_sink (test_allocator);
     gst_iosurface_memory_register_query_function (TEST_TYPE_IOSURFACE_ALLOCATOR,
-        test_iosurface_memory_query_surface);
+        test_iosurface_memory_query_surface, NULL);
     g_once_init_leave (&init, 1);
   }
 }

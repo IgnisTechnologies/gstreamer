@@ -25,6 +25,10 @@
 #include "gsthip-private.h"
 #include <mutex>
 
+#ifdef G_OS_WIN32
+#include <windows.h>
+#endif
+
 #ifndef GST_DISABLE_GST_DEBUG
 #define GST_CAT_DEFAULT ensure_debug_category()
 static GstDebugCategory *
@@ -47,6 +51,7 @@ enum
   PROP_DEVICE_ID,
   PROP_VENDOR,
   PROP_TEXTURE2D_SUPPORT,
+  PROP_ADAPTER_LUID,
 };
 
 struct _GstHipDevicePrivate
@@ -59,6 +64,7 @@ struct _GstHipDevicePrivate
   GstHipVendor vendor;
   gboolean texture_support;
   GstHipStream *stream = nullptr;
+  gint64 luid = 0;
 };
 
 #define gst_hip_device_parent_class parent_class
@@ -89,6 +95,19 @@ gst_hip_device_class_init (GstHipDeviceClass * klass)
           "Texture2D support", FALSE,
           (GParamFlags) (G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
 
+  /**
+   * GstHipDevice:adapter-luid:
+   *
+   * Adapter LUID, same value as DXGI LUID. Only valid on Windows
+   *
+   * Since: 1.30
+   */
+  g_object_class_install_property (object_class, PROP_ADAPTER_LUID,
+      g_param_spec_int64 ("adapter-luid", "Adapter LUID",
+          "Adapter LUID, same value as DXGI LUID. Only valid on Windows",
+          G_MININT64, G_MAXINT64, 0,
+          (GParamFlags) (G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
+
   gst_hip_memory_init_once ();
 }
 
@@ -114,6 +133,9 @@ gst_hip_device_get_property (GObject * object, guint prop_id,
       break;
     case PROP_TEXTURE2D_SUPPORT:
       g_value_set_boolean (value, priv->texture_support);
+      break;
+    case PROP_ADAPTER_LUID:
+      g_value_set_int64 (value, priv->luid);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -201,7 +223,94 @@ gst_hip_device_new (GstHipVendor vendor, guint device_id)
   self->priv->texture_support = texture_support;
   self->priv->stream = stream;
 
+#ifdef G_OS_WIN32
+  char luid[8];
+  guint node_mask;
+
+  hip_ret = HipDeviceGetLuid (vendor, luid, &node_mask, device_id);
+  if (hip_ret == hipSuccess) {
+    LARGE_INTEGER luid_val;
+
+    memcpy (&luid_val.LowPart, luid, sizeof (luid_val.LowPart));
+    memcpy (&luid_val.HighPart,
+        &luid[sizeof (luid_val.LowPart)], sizeof (luid_val.HighPart));
+
+    self->priv->luid = luid_val.QuadPart;
+  }
+#endif
+
   return self;
+}
+
+#ifdef G_OS_WIN32
+static gint
+get_device_id_for_luid (GstHipVendor vendor, gint64 luid_int64)
+{
+  if (!gst_hip_load_library (vendor))
+    return -1;
+
+  int num_dev = 0;
+  auto hip_ret = HipGetDeviceCount (vendor, &num_dev);
+  if (hip_ret != hipSuccess || num_dev <= 0)
+    return -1;
+
+
+  for (int i = 0; i < num_dev; i++) {
+    char luid[8];
+    guint node_mask;
+
+    hip_ret = HipDeviceGetLuid (vendor, luid, &node_mask, i);
+    if (hip_ret != hipSuccess)
+      continue;
+
+    LARGE_INTEGER luid_val;
+    memcpy (&luid_val.LowPart, luid, sizeof (luid_val.LowPart));
+    memcpy (&luid_val.HighPart,
+        &luid[sizeof (luid_val.LowPart)], sizeof (luid_val.HighPart));
+    if (luid_val.QuadPart == luid_int64)
+      return i;
+  }
+
+  return -1;
+}
+#endif
+
+/**
+ * gst_hip_device_new_for_adapter_luid:
+ * @vendor: a #GstHipVendor
+ * @adapter_luid: DXGI adapter LUID
+ *
+ * Creates a new device instance with @vendor and @adapter_luid. Windows only
+ *
+ * Returns: (transfer full) (nullable): a #GstHipDevice if succeeded,
+ * otherwise %NULL
+ *
+ * Since: 1.30
+ */
+GstHipDevice *
+gst_hip_device_new_for_adapter_luid (GstHipVendor vendor, gint64 adapter_luid)
+{
+#ifdef G_OS_WIN32
+  gint device_id = -1;
+  if (vendor != GST_HIP_VENDOR_UNKNOWN) {
+    device_id = get_device_id_for_luid (vendor, adapter_luid);
+  } else {
+    vendor = GST_HIP_VENDOR_AMD;
+    device_id = get_device_id_for_luid (GST_HIP_VENDOR_AMD, adapter_luid);
+    if (device_id < 0) {
+      vendor = GST_HIP_VENDOR_NVIDIA;
+      device_id = get_device_id_for_luid (GST_HIP_VENDOR_NVIDIA, adapter_luid);
+    }
+  }
+
+  if (device_id < 0)
+    return nullptr;
+
+  return gst_hip_device_new (vendor, device_id);
+#else
+  GST_WARNING ("Only supported on Windows");
+  return nullptr;
+#endif
 }
 
 /**

@@ -108,6 +108,18 @@ struct GstHipFuncTableAmd
   hipError_t (*hipGraphicsUnmapResources) (int count,
     hipGraphicsResource_t* resources, hipStream_t stream);
   hipError_t (*hipGraphicsUnregisterResource) (hipGraphicsResource_t resource);
+  hipError_t (*hipMemcpyDtoD) (hipDeviceptr_t dstDevice,
+      hipDeviceptr_t srcDevice, size_t ByteCount);
+  hipError_t (*hipMemcpyDtoDAsync) (hipDeviceptr_t dstDevice,
+      hipDeviceptr_t srcDevice, size_t ByteCount, hipStream_t hStream);
+  hipError_t (*hipMemcpyDtoH) (void *dstHost, hipDeviceptr_t srcDevice,
+      size_t ByteCount);
+  hipError_t (*hipMemcpyDtoHAsync) (void *dstHost,
+      hipDeviceptr_t srcDevice, size_t ByteCount, hipStream_t hStream);
+  hipError_t (*hipMemcpyHtoD) (hipDeviceptr_t dstDevice,
+      const void *srcHost, size_t ByteCount);
+  hipError_t (*hipMemcpyHtoDAsync) (hipDeviceptr_t dstDevice,
+      const void *srcHost, size_t ByteCount, hipStream_t hStream);
 #ifdef HAVE_GST_GL
   hipError_t (*hipGLGetDevices) (unsigned int* pHipDeviceCount,
       int* pHipDevices, unsigned int hipDeviceCount,
@@ -147,6 +159,20 @@ struct GstHipFuncTableCuda
     const CUDA_RESOURCE_DESC * pResDesc, const CUDA_TEXTURE_DESC * pTexDesc,
     const CUDA_RESOURCE_VIEW_DESC * pResViewDesc);
   CUresult (CUDAAPI *cuTexObjectDestroy) (CUtexObject texObject);
+  CUresult (CUDAAPI *cuDeviceGetLuid) (char *luid, unsigned int *deviceNodeMask,
+      CUdevice dev);
+  CUresult (CUDAAPI *cuMemcpyDtoD) (CUdeviceptr dstDevice,
+      CUdeviceptr srcDevice, size_t ByteCount);
+  CUresult (CUDAAPI *cuMemcpyDtoDAsync) (CUdeviceptr dstDevice,
+      CUdeviceptr srcDevice, size_t ByteCount, CUstream hStream);
+  CUresult (CUDAAPI *cuMemcpyDtoH) (void *dstHost, CUdeviceptr srcDevice,
+      size_t ByteCount);
+  CUresult (CUDAAPI *cuMemcpyDtoHAsync) (void *dstHost, CUdeviceptr srcDevice,
+      size_t ByteCount, CUstream hStream);
+  CUresult (CUDAAPI *cuMemcpyHtoD) (CUdeviceptr dstDevice, const void *srcHost,
+      size_t ByteCount);
+  CUresult (CUDAAPI *cuMemcpyHtoDAsync) (CUdeviceptr dstDevice,
+      const void *srcHost, size_t ByteCount, CUstream hStream);
 };
 
 struct GstHipFuncTableCudaRt
@@ -280,6 +306,13 @@ load_amd_func_table (void)
   LOAD_SYMBOL (hipGraphicsResourceGetMappedPointer);
   LOAD_SYMBOL (hipGraphicsUnmapResources);
   LOAD_SYMBOL (hipGraphicsUnregisterResource);
+  LOAD_SYMBOL (hipMemcpyDtoD);
+  LOAD_SYMBOL (hipMemcpyDtoDAsync);
+  LOAD_SYMBOL (hipMemcpyDtoH);
+  LOAD_SYMBOL (hipMemcpyDtoHAsync);
+  LOAD_SYMBOL (hipMemcpyHtoD);
+  LOAD_SYMBOL (hipMemcpyHtoDAsync);
+
 #ifdef HAVE_GST_GL
   LOAD_SYMBOL (hipGLGetDevices);
   LOAD_SYMBOL (hipGraphicsGLRegisterBuffer);
@@ -316,6 +349,13 @@ load_cuda_func_table (void)
   LOAD_SYMBOL (cuMemsetD32Async);
   LOAD_SYMBOL (cuTexObjectCreate);
   LOAD_SYMBOL (cuTexObjectDestroy);
+  LOAD_SYMBOL (cuDeviceGetLuid);
+  LOAD_SYMBOL (cuMemcpyDtoD);
+  LOAD_SYMBOL (cuMemcpyDtoDAsync);
+  LOAD_SYMBOL (cuMemcpyDtoH);
+  LOAD_SYMBOL (cuMemcpyDtoHAsync);
+  LOAD_SYMBOL (cuMemcpyHtoD);
+  LOAD_SYMBOL (cuMemcpyHtoDAsync);
 
   table->loaded = TRUE;
 }
@@ -1317,3 +1357,119 @@ HipGraphicsGLRegisterBuffer (GstHipVendor vendor,
   return hipCUDAErrorTohipError (cuda_ret);
 }
 #endif
+
+hipError_t
+HipDeviceGetLuid (GstHipVendor vendor, char *luid, unsigned int *deviceNodeMask,
+    hipDevice_t dev)
+{
+  CHECK_VENDOR (vendor);
+
+  if (!luid || !deviceNodeMask)
+    return hipErrorInvalidValue;
+
+  if (vendor == GST_HIP_VENDOR_AMD) {
+    hipDeviceProp_t prop = { };
+    auto hip_ret = amd_ftable.hipGetDeviceProperties (&prop, dev);
+    if (hip_ret != hipSuccess)
+      return hip_ret;
+
+    memcpy (luid, prop.luid, sizeof (prop.luid));
+    *deviceNodeMask = prop.luidDeviceNodeMask;
+    return hipSuccess;
+  }
+
+  auto cuda_ret = cuda_ftable.cuDeviceGetLuid (luid,
+      deviceNodeMask, (CUdevice) dev);
+
+  return hipCUResultTohipError (cuda_ret);
+}
+
+hipError_t
+HipMemcpyDtoD (GstHipVendor vendor, hipDeviceptr_t dstDevice,
+    hipDeviceptr_t srcDevice, size_t ByteCount)
+{
+  CHECK_VENDOR (vendor);
+
+  if (vendor == GST_HIP_VENDOR_AMD)
+    return amd_ftable.hipMemcpyDtoD (dstDevice, srcDevice, ByteCount);
+
+  auto cuda_ret = cuda_ftable.cuMemcpyDtoD ((CUdeviceptr) dstDevice,
+      (CUdeviceptr) srcDevice, ByteCount);
+  return hipCUResultTohipError (cuda_ret);
+}
+
+hipError_t
+HipMemcpyDtoDAsync (GstHipVendor vendor, hipDeviceptr_t dstDevice,
+    hipDeviceptr_t srcDevice, size_t ByteCount, hipStream_t hStream)
+{
+  CHECK_VENDOR (vendor);
+
+  if (vendor == GST_HIP_VENDOR_AMD) {
+    return amd_ftable.hipMemcpyDtoDAsync (dstDevice, srcDevice, ByteCount,
+        hStream);
+  }
+
+  auto cuda_ret = cuda_ftable.cuMemcpyDtoDAsync ((CUdeviceptr) dstDevice,
+      (CUdeviceptr) srcDevice, ByteCount, (CUstream) hStream);
+  return hipCUResultTohipError (cuda_ret);
+}
+
+hipError_t
+HipMemcpyDtoH (GstHipVendor vendor, void *dstHost,
+    hipDeviceptr_t srcDevice, size_t ByteCount)
+{
+  CHECK_VENDOR (vendor);
+
+  if (vendor == GST_HIP_VENDOR_AMD)
+    return amd_ftable.hipMemcpyDtoH (dstHost, srcDevice, ByteCount);
+
+  auto cuda_ret = cuda_ftable.cuMemcpyDtoH (dstHost,
+      (CUdeviceptr) srcDevice, ByteCount);
+  return hipCUResultTohipError (cuda_ret);
+}
+
+hipError_t
+HipMemcpyDtoHAsync (GstHipVendor vendor, void *dstHost,
+    hipDeviceptr_t srcDevice, size_t ByteCount, hipStream_t hStream)
+{
+  CHECK_VENDOR (vendor);
+
+  if (vendor == GST_HIP_VENDOR_AMD) {
+    return amd_ftable.hipMemcpyDtoHAsync (dstHost, srcDevice, ByteCount,
+        hStream);
+  }
+
+  auto cuda_ret = cuda_ftable.cuMemcpyDtoHAsync (dstHost,
+      (CUdeviceptr) srcDevice, ByteCount, (CUstream) hStream);
+  return hipCUResultTohipError (cuda_ret);
+}
+
+hipError_t
+HipMemcpyHtoD (GstHipVendor vendor, hipDeviceptr_t dstDevice,
+    const void *srcHost, size_t ByteCount)
+{
+  CHECK_VENDOR (vendor);
+
+  if (vendor == GST_HIP_VENDOR_AMD)
+    return amd_ftable.hipMemcpyHtoD (dstDevice, srcHost, ByteCount);
+
+  auto cuda_ret = cuda_ftable.cuMemcpyHtoD ((CUdeviceptr) dstDevice,
+      srcHost, ByteCount);
+  return hipCUResultTohipError (cuda_ret);
+}
+
+hipError_t
+HipMemcpyHtoDAsync (GstHipVendor vendor, hipDeviceptr_t dstDevice,
+    const void *srcHost, size_t ByteCount, hipStream_t hStream)
+{
+  CHECK_VENDOR (vendor);
+
+  if (vendor == GST_HIP_VENDOR_AMD) {
+    return amd_ftable.hipMemcpyHtoDAsync (dstDevice, srcHost, ByteCount,
+        hStream);
+  }
+
+  auto cuda_ret = cuda_ftable.cuMemcpyHtoDAsync ((CUdeviceptr) dstDevice,
+      srcHost, ByteCount, (CUstream) hStream);
+  return hipCUResultTohipError (cuda_ret);
+}
