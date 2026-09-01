@@ -1,4 +1,4 @@
-name: Sync ignis-main with upstream
+name: Sync ignis-main with upstream release
 
 on:
   schedule:
@@ -21,48 +21,7 @@ jobs:
           ref: ignis-main
           fetch-depth: 0
 
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Merge upstream into automation branch
-        id: merge
-        run: |
-          BRANCH="automation/sync-upstream-main"
-
-          git fetch origin ignis-main:refs/remotes/origin/ignis-main
-          git fetch https://github.com/GStreamer/gstreamer.git main:refs/remotes/upstream/main
-          git switch -C "$BRANCH" origin/ignis-main
-
-          if git merge-base --is-ancestor refs/remotes/upstream/main HEAD; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          git merge --no-ff --no-edit refs/remotes/upstream/main
-          git push --force-with-lease origin "$BRANCH"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Create Pull Request to ignis-main
-        if: steps.merge.outputs.changed == 'true'
+      - name: Sync upstream release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BRANCH="automation/sync-upstream-main"
-          OPEN_PR_URL="$(gh pr list \
-            --state open \
-            --head "$BRANCH" \
-            --base ignis-main \
-            --json url \
-            --jq '.[0].url // empty')"
-
-          if [ -n "$OPEN_PR_URL" ]; then
-            echo "$OPEN_PR_URL"
-          else
-            gh pr create \
-              --base ignis-main \
-              --head "$BRANCH" \
-              --title "Sync upstream GStreamer into ignis-main" \
-              --body "This PR merges the latest upstream GStreamer main branch into ignis-main while preserving Ignis changes."
-          fi
+        run: bash .github/scripts/sync-upstream-release.sh
