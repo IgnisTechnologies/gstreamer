@@ -200,10 +200,18 @@ _image_to_raw_perform (gpointer impl, GstBuffer * inbuf, GstBuffer ** outbuf)
   GstVulkanCommandBuffer *cmd_buf;
   GError *error = NULL;
   GstFlowReturn ret;
-  GArray *barriers = NULL;
+  GstVulkanBarrierState *barriers = NULL;
   int i, n_mems, n_planes;
   gboolean one_mem_per_plane, single_multiplanar;
   VkImageLayout dst_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
+  n_mems = gst_buffer_n_memory (inbuf);
+  if (n_mems > GST_VIDEO_MAX_PLANES) {
+    GST_ERROR_OBJECT (raw->download,
+        "Input buffer has %d memories, but at most %d are supported", n_mems,
+        GST_VIDEO_MAX_PLANES);
+    goto error;
+  }
 
   if (!raw->exec) {
     GstVulkanCommandPool *cmd_pool;
@@ -231,16 +239,9 @@ _image_to_raw_perform (gpointer impl, GstBuffer * inbuf, GstBuffer ** outbuf)
               NULL)) != GST_FLOW_OK)
     goto out;
 
+again:
   if (!gst_vulkan_operation_begin (raw->exec, &error))
     goto error;
-
-  n_mems = gst_buffer_n_memory (inbuf);
-  if (n_mems > GST_VIDEO_MAX_PLANES) {
-    GST_ERROR_OBJECT (raw->download,
-        "Input buffer has %d memories, but at most %d are supported", n_mems,
-        GST_VIDEO_MAX_PLANES);
-    goto unlock_error;
-  }
 
   if (!gst_vulkan_operation_add_dependency_frame (raw->exec, inbuf,
           VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT))
@@ -254,35 +255,9 @@ _image_to_raw_perform (gpointer impl, GstBuffer * inbuf, GstBuffer ** outbuf)
           NULL))
     goto unlock_error;
 
-  barriers = gst_vulkan_operation_retrieve_image_barriers (raw->exec);
-  if (barriers->len == 0) {
-    ret = GST_FLOW_ERROR;
-    goto unlock_error;
-  }
-
-  if (gst_vulkan_operation_use_sync2 (raw->exec)) {
-#if defined(VK_KHR_synchronization2)
-    VkDependencyInfoKHR dependency_info = {
-      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR,
-      .pImageMemoryBarriers = (gpointer) barriers->data,
-      .imageMemoryBarrierCount = barriers->len,
-    };
-
-    gst_vulkan_operation_pipeline_barrier2 (raw->exec, &dependency_info);
-    dst_layout =
-        g_array_index (barriers, VkImageMemoryBarrier2KHR, 0).newLayout;
-#endif
-  } else {
-    gst_vulkan_command_buffer_lock (cmd_buf);
-    vkCmdPipelineBarrier (cmd_buf->cmd,
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, barriers->len,
-        (gpointer) barriers->data);
-    gst_vulkan_command_buffer_unlock (cmd_buf);
-
-    dst_layout = g_array_index (barriers, VkImageMemoryBarrier, 0).newLayout;
-  }
-  g_clear_pointer (&barriers, g_array_unref);
+  barriers = gst_vulkan_operation_get_barriers (raw->exec);
+  gst_vulkan_barrier_state_pipeline_barrier (barriers, cmd_buf, 0);
+  dst_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
   n_planes = GST_VIDEO_INFO_N_PLANES (&raw->out_info);
   one_mem_per_plane = n_mems == n_planes;
@@ -387,8 +362,15 @@ _image_to_raw_perform (gpointer impl, GstBuffer * inbuf, GstBuffer ** outbuf)
     gst_vulkan_command_buffer_unlock (cmd_buf);
   }
 
-  if (!gst_vulkan_operation_end (raw->exec, &error))
+  if (!gst_vulkan_operation_end (raw->exec, &error)) {
+    if (g_error_matches (error, GST_VULKAN_ERROR, VK_ERROR_OUT_OF_DATE_KHR)) {
+      GST_DEBUG_OBJECT (raw->download,
+          "Detected a synchronisation hazard, retrying");
+      g_clear_error (&error);
+      goto again;
+    }
     goto error;
+  }
 
   /* XXX: STALL!
    * Need to have the buffer gst_memory_map() wait for this fence before
@@ -401,7 +383,6 @@ out:
   return ret;
 
 unlock_error:
-  g_clear_pointer (&barriers, g_array_unref);
   gst_vulkan_operation_reset (raw->exec);
 
 error:

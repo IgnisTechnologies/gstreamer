@@ -206,6 +206,51 @@ GST_HIP_API
 hipError_t HipGraphicsUnregisterResource (GstHipVendor vendor,
                                           hipGraphicsResource_t resource);
 
+GST_HIP_API
+hipError_t HipDeviceGetLuid (GstHipVendor vendor,
+                             char *luid,
+                             unsigned int *deviceNodeMask,
+                             hipDevice_t dev);
+
+GST_HIP_API
+hipError_t HipMemcpyDtoD (GstHipVendor vendor,
+                          hipDeviceptr_t dstDevice,
+                          hipDeviceptr_t srcDevice,
+                          size_t ByteCount);
+
+GST_HIP_API
+hipError_t HipMemcpyDtoDAsync (GstHipVendor vendor,
+                               hipDeviceptr_t dstDevice,
+                               hipDeviceptr_t srcDevice,
+                               size_t ByteCount,
+                               hipStream_t hStream);
+
+GST_HIP_API
+hipError_t HipMemcpyDtoH (GstHipVendor vendor,
+                          void *dstHost,
+                          hipDeviceptr_t srcDevice,
+                          size_t ByteCount);
+
+GST_HIP_API
+hipError_t HipMemcpyDtoHAsync (GstHipVendor vendor,
+                                void *dstHost,
+                                hipDeviceptr_t srcDevice,
+                                size_t ByteCount,
+                                hipStream_t hStream);
+
+GST_HIP_API
+hipError_t HipMemcpyHtoD (GstHipVendor vendor,
+                          hipDeviceptr_t dstDevice,
+                          const void *srcHost,
+                          size_t ByteCount);
+
+GST_HIP_API
+hipError_t HipMemcpyHtoDAsync (GstHipVendor vendor,
+                               hipDeviceptr_t dstDevice,
+                               const void *srcHost,
+                               size_t ByteCount,
+                               hipStream_t hStream);
+
 G_END_DECLS
 
 

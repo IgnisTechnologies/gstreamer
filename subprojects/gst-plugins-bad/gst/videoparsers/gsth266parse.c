@@ -226,6 +226,7 @@ gst_h266_parse_init (GstH266Parse * h266parse)
   h266parse->frame_out = gst_adapter_new ();
   gst_base_parse_set_pts_interpolation (GST_BASE_PARSE (h266parse), FALSE);
   gst_base_parse_set_infer_ts (GST_BASE_PARSE (h266parse), FALSE);
+  gst_base_parse_set_allow_duplicated_pts (GST_BASE_PARSE (h266parse), TRUE);
   GST_PAD_SET_ACCEPT_INTERSECT (GST_BASE_PARSE_SINK_PAD (h266parse));
   GST_PAD_SET_ACCEPT_TEMPLATE (GST_BASE_PARSE_SINK_PAD (h266parse));
 }
@@ -261,19 +262,19 @@ gst_h266_parse_reset_frame (GstH266Parse * h266parse)
   h266parse->have_sps_in_frame = FALSE;
   h266parse->have_pps_in_frame = FALSE;
   gst_adapter_clear (h266parse->frame_out);
-  gst_video_clear_user_data (&h266parse->user_data, FALSE);
+  gst_video_clear_user_data (&h266parse->user_data);
   gst_video_clear_user_data_unregistered (&h266parse->user_data_unregistered,
       FALSE);
   if (h266parse->dsc_initialization_state == GST_H266_PARSE_SEI_ACTIVE) {
-    gst_h274_dsc_initialization_free (&h266parse->dsc_initialization);
+    gst_h274_dsc_initialization_clear (&h266parse->dsc_initialization);
     h266parse->dsc_initialization_state = GST_H266_PARSE_SEI_EXPIRED;
   }
   if (h266parse->dsc_selection_state == GST_H266_PARSE_SEI_ACTIVE) {
-    gst_h274_dsc_selection_free (&h266parse->dsc_selection);
+    gst_h274_dsc_selection_clear (&h266parse->dsc_selection);
     h266parse->dsc_selection_state = GST_H266_PARSE_SEI_EXPIRED;
   }
   if (h266parse->dsc_verification_state == GST_H266_PARSE_SEI_ACTIVE) {
-    gst_h274_dsc_verification_free (&h266parse->dsc_verification);
+    gst_h274_dsc_verification_clear (&h266parse->dsc_verification);
     h266parse->dsc_verification_state = GST_H266_PARSE_SEI_EXPIRED;
   }
 }
@@ -306,6 +307,8 @@ gst_h266_parse_reset_stream_info (GstH266Parse * h266parse)
   h266parse->packetized = FALSE;
   h266parse->push_codec = FALSE;
   h266parse->first_frame = TRUE;
+  memset (&h266parse->opi, 0, sizeof (GstH266OPI));
+  h266parse->have_opi = FALSE;
   memset (&h266parse->sei_frame_field, 0, sizeof (GstH266FrameFieldInfo));
   h266parse->interlaced_mode = GST_H266_PARSE_PROGRESSIVE_ONLY;
 
@@ -654,7 +657,7 @@ gst_h266_parse_process_sei (GstH266Parse * h266parse, GstH266NalUnit * nalu)
             &sei.payload.user_data_unregistered);
         break;
       case GST_H266_SEI_DIGITALLY_SIGNED_CONTENT_INITIALIZATION:
-        gst_h274_dsc_initialization_free (&h266parse->dsc_initialization);
+        gst_h274_dsc_initialization_clear (&h266parse->dsc_initialization);
         gst_h274_dsc_initialization_copy (&h266parse->dsc_initialization,
             &sei.payload.dsc_initialization);
         h266parse->dsc_initialization_state = GST_H266_PARSE_SEI_ACTIVE;
@@ -665,7 +668,7 @@ gst_h266_parse_process_sei (GstH266Parse * h266parse, GstH266NalUnit * nalu)
         h266parse->dsc_selection_state = GST_H266_PARSE_SEI_ACTIVE;
         break;
       case GST_H266_SEI_DIGITALLY_SIGNED_CONTENT_VERIFICATION:
-        gst_h274_dsc_verification_free (&h266parse->dsc_verification);
+        gst_h274_dsc_verification_clear (&h266parse->dsc_verification);
         gst_h274_dsc_verification_copy (&h266parse->dsc_verification,
             &sei.payload.dsc_verification);
         h266parse->dsc_verification_state = GST_H266_PARSE_SEI_ACTIVE;
@@ -972,6 +975,21 @@ gst_h266_parse_process_nal (GstH266Parse * h266parse, GstH266NalUnit * nalu)
         GST_WARNING_OBJECT (h266parse, "failed to parse AUD:");
         return FALSE;
       }
+      break;
+    }
+    case GST_H266_NAL_OPI:
+    {
+      GstH266OPI opi;
+
+      pres = gst_h266_parser_parse_opi (nalparser, nalu, &opi);
+      if (pres != GST_H266_PARSER_OK) {
+        GST_WARNING_OBJECT (h266parse, "failed to parse OPI:");
+        return FALSE;
+      }
+
+      h266parse->opi = opi;
+      h266parse->have_opi = TRUE;
+      h266parse->update_caps = TRUE;
       break;
     }
     default:
@@ -1737,10 +1755,12 @@ gst_h266_parse_make_codec_data (GstH266Parse * h266parse)
     guint8 constant_frame_rate = 1;
     guint8 chroma_format_idc = sps->chroma_format_idc;
     GstBuffer *pci;
+    guint16 ols_idx = 0;
 
     /* ols_idx(9) | num_sublayers(3) | constant_frame_rate(2) | chroma_format_idc(2) */
-    /* FIXME: OPI isn't parsed so we don't store an ols_idx in the parser and just write 0 here. */
-    guint16 ols_idx = 0;
+    if (h266parse->have_opi && h266parse->opi.ols_info_present_flag)
+      ols_idx = h266parse->opi.ols_idx;
+
     gst_byte_writer_put_uint16_be (&bw,
         (ols_idx << 7) | (num_sublayers << 4) |
         (constant_frame_rate << 2) | chroma_format_idc);

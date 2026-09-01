@@ -1,5 +1,5 @@
 project('gst-libav', 'c',
-  version : '1.29.1.1',
+  version : '1.29.2.1',
   meson_version : '>= 1.4',
   default_options : [ 'warning_level=1',
                       'buildtype=debugoptimized',
@@ -57,6 +57,10 @@ cdata.set('LIBAV_SOURCE', '"system install"')
 cdata.set('PACKAGE_VERSION', '"@0@"'.format(gst_version))
 cdata.set('PACKAGE', '"gst-libav"')
 
+if get_option('plugin-static-features')
+  cdata.set('GST_LIBAV_STATIC_FEATURES', 1)
+endif
+
 # GStreamer package name and origin url
 gst_package_name = get_option('package-name')
 if gst_package_name == ''
@@ -113,7 +117,10 @@ if cc.get_id() == 'msvc'
       '/wd4146', # unary minus on unsigned (beware INT_MIN)
       '/wd4244', # lossy type conversion (e.g. double -> int)
       '/wd4305', # truncating type conversion (e.g. double -> float)
-      cc.get_supported_arguments(['/utf-8']), # set the input encoding to utf-8
+      cc.get_supported_arguments([
+        '/utf-8', # set the input encoding to utf-8
+        '/Zc:preprocessor', # enable preprocessor conformance mode (disable legacy preprocessor)
+      ]),
   ]
 
   if gst_version_is_dev

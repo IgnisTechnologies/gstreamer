@@ -51,6 +51,7 @@ base_tests = [
   [['elements/h264parse.c'], false, [libparser_dep, gstcodecparsers_dep]],
   [['elements/h264timestamper.c'], false, [libparser_dep, gstcodecparsers_dep]],
   [['elements/h265parse.c'], false, [libparser_dep, gstcodecparsers_dep]],
+  [['elements/h265seiinserter.c'], get_option('closedcaption').disabled(), [gstcodecparsers_dep]],
   [['elements/h266parse.c'], false, [libparser_dep, gstcodecparsers_dep]],
   [['elements/hlsdemux_m3u8.c'], not hls_dep.found(), [hls_dep]],
   [['elements/id3mux.c'], get_option('id3tag').disabled()],
@@ -127,6 +128,7 @@ base_tests = [
   [['libs/vkimage.c'], not gstvulkan_dep.found(), [gstvulkan_dep]],
   [['libs/vkinstance.c'], not gstvulkan_dep.found(), [gstvulkan_dep]],
   [['libs/vkimagebufferpool.c'], not gstvulkan_dep.found(), [gstvulkan_dep]],
+  [['libs/vkoperation.c'], not gstvulkan_dep.found(), [gstvulkan_dep]],
   [['libs/vkvideodecode.c'], not gstvulkan_dep.found() or vulkan_conf.get('GST_VULKAN_HAVE_VIDEO_EXTENSIONS') != 1, [gstvulkan_dep]],
   [['libs/vkvideoencodeh264.c'], not gstvulkan_dep.found() or vulkan_conf.get('GST_VULKAN_HAVE_VIDEO_EXTENSIONS') != 1, [gstvulkan_dep, gstcodecparsers_dep]],
   [['libs/vkvideoencodeh265.c'], not gstvulkan_dep.found() or vulkan_conf.get('GST_VULKAN_HAVE_VIDEO_EXTENSIONS') != 1, [gstvulkan_dep, gstcodecparsers_dep]],
@@ -184,7 +186,7 @@ if host_machine.system() != 'windows'
     [['elements/voaacenc.c'],
         not voaac_dep.found() or not cdata.has('HAVE_UNISTD_H'), [voaac_dep]],
     [['elements/webrtcbin.c'], not libnice_dep.found(), [gstwebrtc_dep]],
-    [['elements/x265enc.c'], not x265_dep.found(), [x265_dep]],
+    [['elements/x265enc.c'], not x265_dep.found(), [x265_dep, gstcodecparsers_dep]],
     [['elements/zbar.c'], not zbar_dep.found(), [zbar_dep]],
     [['elements/zxing.c'], not zxing_dep.found(), [zxing_dep]],
     [['elements/lc3.c'], not lc3_dep.found(), [lc3_dep]],
@@ -194,17 +196,20 @@ endif
 if host_system == 'darwin'
   videotoolbox_dep = dependency('VideoToolbox')
   avfoundation_test_dep = dependency('appleframeworks', modules : ['Foundation', 'AVFoundation'])
+  iosurface_test_dep = dependency('IOSurface')
   base_tests += [
     [['elements/avfsources-videometa.c'], false, [avfoundation_test_dep], [], false],
-    [['pipelines/avfsources-output-paths.c'], false, [avfoundation_test_dep, gstiosurface_dep], [], false],
+    [['pipelines/avfsources-output-paths.c'], false, [avfoundation_test_dep, iosurface_test_dep, gstallocators_dep], [], false],
+    [['elements/vtdec.c']],
     [['pipelines/avfassetsrc-supplemental.c'], false, [videotoolbox_dep]],
     [['pipelines/avfassetsrc-partial.c']],
-    [['pipelines/vtdec-output-paths.c'], false, [gstiosurface_dep]],
-    [['pipelines/vtenc-iosurface-input.c'], false, [dependency('appleframeworks', modules : ['CoreFoundation', 'CoreVideo', 'IOSurface']), gstiosurface_dep]],
+    [['pipelines/vtdec-output-paths.c'], false, [iosurface_test_dep, gstallocators_dep]],
+    [['pipelines/vtenc-iosurface-input.c'], false, [dependency('appleframeworks', modules : ['CoreFoundation', 'CoreVideo', 'IOSurface']), gstallocators_dep]],
   ]
 
   if subsystem == 'macos'
     base_tests += [
+      [['generic/avfdeviceprovider.c']],
       [['elements/avfdeviceidentity.c']]
     ]
   endif
@@ -228,6 +233,7 @@ test_defines = [
   '-DDASH_MPD_DATADIR=' + fsmod.as_posix(meson.current_source_dir()) + '/elements/dash_mpd_data',
   '-DGST_TFLITE_TEST_DATA_PATH="' + fsmod.as_posix(meson.current_source_dir()) + '/elements/tfliteinference_data"',
   '-DGST_ONNX_TEST_DATA_PATH="' + fsmod.as_posix(meson.current_source_dir()) + '/elements/onnxinference_data"',
+  '-DGST_OPENJPEG_TEST_DATA_PATH="' + fsmod.as_posix(meson.current_source_dir()) + '/elements/openjpeg_data"',
   '-DGST_USE_UNSTABLE_API',
 ]
 

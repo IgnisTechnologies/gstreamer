@@ -926,6 +926,7 @@ not_negotiated:
 shutdown:
   {
     GST_DEBUG_OBJECT (self, "Shutting down");
+    g_mutex_unlock (&self->mask_mutex);
     gst_buffer_unref (buffer);
     return GST_FLOW_FLUSHING;
   }
@@ -1137,6 +1138,8 @@ gst_shape_wipe_src_event (GstPad * pad, GstObject * parent, GstEvent * event)
 static gboolean
 plugin_init (GstPlugin * plugin)
 {
+  gst_plugin_set_static_features_flag (plugin);
+
   return GST_ELEMENT_REGISTER (shapewipe, plugin);
 }
 

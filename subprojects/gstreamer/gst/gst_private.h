@@ -87,11 +87,17 @@ struct _GstPluginPrivate {
   GList *deps;                 /* list of GstPluginDep structures */
   GstStructure *status_info;
   GstStructure *cache_data;
+
+  GstRegistry *registry;       /* Registry that this plugin belongs to */
 };
 
+/* Symbols with leading __ are reserved/UB in C, so we use _priv_gst */
+
 /* Private function for getting plugin features directly */
-GList *
-_priv_plugin_get_features(GstRegistry *registry, GstPlugin *plugin);
+G_GNUC_INTERNAL GList *
+_priv_gst_registry_get_features_for_plugin (GstRegistry * registry,
+                                            GstPlugin * plugin,
+                                            gboolean steal_features);
 
 /* Needed by GstMeta (to access meta seq) and GstBuffer (create/free/iterate) */
 typedef struct _GstMetaItem GstMetaItem;
@@ -101,7 +107,6 @@ struct _GstMetaItem {
   GstMeta meta;
 };
 
-/* FIXME: could rename all priv_gst_* functions to __gst_* now */
 G_GNUC_INTERNAL  gboolean priv_gst_plugin_loading_have_whitelist (void);
 
 G_GNUC_INTERNAL  guint32  priv_gst_plugin_loading_get_whitelist_hash (void);
@@ -161,6 +166,10 @@ G_GNUC_INTERNAL  void _priv_gst_registry_bump_feature_list_cookie (GstRegistry *
 
 GST_API
 gboolean _gst_plugin_loader_client_run (const gchar * pipe_name);
+
+/* Used by gst-preregistry-generate to create build-time caches of static plugins */
+GST_API
+void _priv_gst_registry_create_static_caches(const gchar **paths, GError **err);
 
 G_GNUC_INTERNAL  GstPlugin * _priv_gst_plugin_load_file_for_registry (const gchar *filename,
                                                                       GstRegistry * registry,
