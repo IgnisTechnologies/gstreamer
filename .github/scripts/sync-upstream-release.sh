@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+BRANCH="automation/sync-upstream-release"
+MINIMUM_RELEASE="1.30.0"
+
+git config user.name "github-actions[bot]"
+git config user.email "github-actions[bot]@users.noreply.github.com"
+
+git fetch origin ignis-main:refs/remotes/origin/ignis-main
+git fetch --force https://github.com/GStreamer/gstreamer.git \
+  "+refs/tags/*:refs/tags/upstream/*"
+
+RELEASE="$(
+  git for-each-ref \
+    --format='%(refname:strip=3)' \
+    refs/tags/upstream/ |
+    awk -F '[.]' \
+      '$0 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/ && $2 % 2 == 0' |
+    sort -V |
+    tail -n 1
+)"
+
+if [ -z "$RELEASE" ] ||
+  [ "$(printf '%s\n%s\n' "$MINIMUM_RELEASE" "$RELEASE" | sort -V | head -n 1)" != "$MINIMUM_RELEASE" ]; then
+  echo "No stable GStreamer release at or above $MINIMUM_RELEASE"
+  exit 0
+fi
+
+TAG_REF="refs/tags/upstream/$RELEASE"
+
+if git merge-base --is-ancestor "$TAG_REF" origin/ignis-main; then
+  echo "GStreamer $RELEASE is already included in ignis-main"
+  exit 0
+fi
+
+git switch -C "$BRANCH" origin/ignis-main
+git merge --no-ff \
+  -m "Merge upstream GStreamer $RELEASE into ignis-main" \
+  "$TAG_REF"
+git push --force-with-lease origin "$BRANCH"
+
+TITLE="Sync upstream GStreamer $RELEASE into ignis-main"
+BODY="This PR merges upstream GStreamer $RELEASE into ignis-main while preserving Ignis changes."
+OPEN_PR_URL="$(gh pr list \
+  --state open \
+  --head "$BRANCH" \
+  --base ignis-main \
+  --json url \
+  --jq '.[0].url // empty')"
+
+if [ -n "$OPEN_PR_URL" ]; then
+  gh pr edit "$OPEN_PR_URL" \
+    --title "$TITLE"
+else
+  gh pr create \
+    --base ignis-main \
+    --head "$BRANCH" \
+    --title "$TITLE" \
+    --body "$BODY"
+fi
