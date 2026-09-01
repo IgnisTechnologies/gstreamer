@@ -20,6 +20,7 @@
 #pragma once
 
 #include <gst/hip/gsthip.h>
+#include <gst/hip/gsthipformat-private.h>
 
 G_BEGIN_DECLS
 
