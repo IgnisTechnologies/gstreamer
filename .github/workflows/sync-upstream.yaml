@@ -87,8 +87,7 @@ jobs:
 
           if [ -n "$OPEN_PR_URL" ]; then
             gh pr edit "$OPEN_PR_URL" \
-              --title "$TITLE" \
-              --body "$BODY"
+              --title "$TITLE"
           else
             gh pr create \
               --base ignis-main \
