@@ -16,6 +16,14 @@
 ## Conversion done with mk-ca-bundle.pl version 1.29.
 ## SHA256: 0ff137babc6a5561a9cfbe9f29558972e5b528202681b7d3803d03a3e82922bd
 ##
+## Ignis local security exclusions applied after mk-ca-bundle.pl on 2026-10-21.
+## The SHA256 above identifies the original Mozilla input, not this modified bundle.
+## After regeneration, exclude certificates with these SHA256 DER fingerprints:
+## emSign ECC Root CA - G3: 86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b
+## Comodo AAA Services root: d7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4
+## Use update-ca-bundles.py in the xcode iOS directory to reapply these exclusions.
+## Advisory: https://lists.debian.org/debian-security-announce/2026/msg00487.html
+##
 
 
 GlobalSign Root CA
