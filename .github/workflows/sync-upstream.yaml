@@ -7,6 +7,12 @@ on:
   workflow_dispatch:
     # Allow manual trigger from GitHub UI
 
+env:
+  NODE_OPTIONS: --use-openssl-ca
+  SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+  SSL_CERT_DIR: /etc/ssl/certs
+  AWS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -15,6 +21,16 @@ jobs:
       pull-requests: write
 
     steps:
+      - name: Remove compromised CA trust before downloads
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          elevate=()
+          if [ "$(id -u)" -ne 0 ]; then elevate=(sudo); fi
+          "${elevate[@]}" sed -i '/^mozilla\/emSign_ECC_Root_CA_-_G3.crt$/d; /^mozilla\/Comodo_AAA_Services_root.crt$/d' /etc/ca-certificates.conf
+          "${elevate[@]}" rm -f /usr/share/ca-certificates/mozilla/emSign_ECC_Root_CA_-_G3.crt /usr/share/ca-certificates/mozilla/Comodo_AAA_Services_root.crt
+          "${elevate[@]}" update-ca-certificates --fresh
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
