@@ -1,27 +1,109 @@
-name: Sync ignis-main with upstream release
+name: Sync and validate upstream GStreamer
 
 on:
   schedule:
-    # Run weekly on Mondays at 6:00 AM UTC
     - cron: "0 6 * * 1"
   workflow_dispatch:
-    # Allow manual trigger from GitHub UI
+
+concurrency:
+  group: gstreamer-upstream-update
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    outputs:
+      pr: ${{ steps.prepare.outputs.pr }}
+      release: ${{ steps.prepare.outputs.release }}
+      sha: ${{ steps.prepare.outputs.sha }}
+      base: ${{ steps.prepare.outputs.base_sha }}
+      conflicts: ${{ steps.prepare.outputs.conflicts }}
+      stage: ${{ steps.prepare.outcome == 'failure' && 'merge conflict or preparation' || steps.dependencies.outcome == 'failure' && 'build dependencies' || steps.validate.outcome == 'failure' && 'regression tests' || steps.merge.outcome == 'failure' && 'automatic merge' || steps.dispatch.outcome == 'failure' && 'downstream build dispatch' || 'workflow setup or log upload' }}
+    env:
+      GH_TOKEN: ${{ secrets.IGNISBOT_GH_ACCESS_TOKEN }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ignis-main
           fetch-depth: 0
-
-      - name: Sync upstream release
+          token: ${{ secrets.IGNISBOT_GH_ACCESS_TOKEN }}
+      - name: Prepare candidate and PR
+        id: prepare
+        run: |
+          cp .github/scripts/sync-upstream-release.sh "$RUNNER_TEMP/sync-upstream-release.sh"
+          bash "$RUNNER_TEMP/sync-upstream-release.sh"
+      - name: Install build dependencies
+        id: dependencies
+        if: steps.prepare.outputs.changed == 'true'
+        run: |
+          sudo apt-get update --error-on=any
+          sudo apt-get install -y build-essential ninja-build pkg-config python3-pip python3-venv flex bison libglib2.0-dev
+          python3 -m venv "$RUNNER_TEMP/meson"
+          "$RUNNER_TEMP/meson/bin/pip" install 'meson==1.12.1'
+          echo "$RUNNER_TEMP/meson/bin" >> "$GITHUB_PATH"
+      - name: Build candidate and test Ignis metadata behavior
+        id: validate
+        if: steps.prepare.outputs.changed == 'true'
+        run: bash .github/scripts/test-metadata-regressions.sh
+      - name: Merge validated candidate
+        id: merge
+        if: steps.prepare.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash .github/scripts/sync-upstream-release.sh
+          CANDIDATE_SHA: ${{ steps.prepare.outputs.sha }}
+          BASE_SHA: ${{ steps.prepare.outputs.base_sha }}
+          UPDATE_PR: ${{ steps.prepare.outputs.pr }}
+        run: |
+          current_base="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/ignis-main" --jq .object.sha)"
+          if [ "$current_base" != "$BASE_SHA" ]; then
+            echo "ignis-main changed during validation; rerun against the new base"
+            exit 1
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$CANDIDATE_SHA" \
+            -f context=ignis-gstreamer-regressions -f state=success \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # Strict required checks close the race if the base moves after the check above.
+          strict="$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/ignis-main" --jq \
+            'any(.[]; .type == "required_status_checks" and .parameters.strict_required_status_checks_policy == true and any(.parameters.required_status_checks[]; .context == "ignis-gstreamer-regressions"))')"
+          if [ "$strict" != true ]; then
+            echo "Configure ignis-gstreamer-regressions as a strict required check before enabling unattended merges"
+            exit 1
+          fi
+          gh pr merge "$UPDATE_PR" --merge --match-head-commit "$CANDIDATE_SHA"
+      - name: Trigger matching livestream image build
+        id: dispatch
+        if: steps.prepare.outputs.changed == 'true'
+        run: gh workflow run update-gstreamer-submodule.yaml --repo IgnisTechnologies/ignis-livestream --ref main
+      - name: Upload validation logs
+        if: always() && steps.prepare.outputs.pr != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: gstreamer-validation
+          path: |
+            build-metadata-regressions/meson-logs/
+            ${{ runner.temp }}/gstreamer-conflicts.txt
+          if-no-files-found: ignore
+
+  notify:
+    needs: sync
+    if: always() && needs.sync.result == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Notify el-platform
+        env:
+          GH_TOKEN: ${{ secrets.IGNISBOT_GH_ACCESS_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.CODEXPOO_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: C09V4N95Y4Q
+          UPDATE_PR: ${{ needs.sync.outputs.pr }}
+          UPDATE_RELEASE: ${{ needs.sync.outputs.release }}
+          UPDATE_SHA: ${{ needs.sync.outputs.sha }}
+          UPDATE_BASE: ${{ needs.sync.outputs.base }}
+          UPDATE_CONFLICTS: ${{ needs.sync.outputs.conflicts }}
+          FAILED_STAGE: ${{ needs.sync.outputs.stage }}
+          FAILED_STATUS_CONTEXT: ${{ (needs.sync.outputs.stage == 'regression tests' || needs.sync.outputs.stage == 'build dependencies') && 'ignis-gstreamer-regressions' || '' }}
+        run: python3 .github/scripts/notify-update-failure.py

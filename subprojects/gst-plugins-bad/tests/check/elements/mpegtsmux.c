@@ -640,6 +640,123 @@ GST_START_TEST (test_caps_noop_change)
 
 GST_END_TEST;
 
+
+/* Exercise successive access units, including units spanning many TS packets.
+ * Both Ignis fixes affect the PES header of the next metadata buffer. */
+static void
+check_metadata_alignment (const gchar * media_type, guint64 bitrate)
+{
+  const guint sizes[] = { 420, 69, 6969 };
+  GstStaticPadTemplate metadata_template = GST_STATIC_PAD_TEMPLATE ("src",
+      GST_PAD_SRC, GST_PAD_ALWAYS,
+      GST_STATIC_CAPS ("meta/x-klv, parsed=(boolean)true; meta/x-id3"));
+  GstElement *mux;
+  GstCaps *caps;
+  gchar *padname;
+  guint unit = 0, copied = 0;
+  guint64 first_pts = 0;
+  GList *item;
+
+  mux = setup_tsmux (&metadata_template, "sink_65", &padname);
+  g_object_set (mux, "bitrate", bitrate, NULL);
+  fail_unless (gst_element_set_state (mux,
+          GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE);
+  caps = gst_caps_new_simple (media_type, "parsed", G_TYPE_BOOLEAN, TRUE, NULL);
+  gst_check_setup_events (mysrcpad, mux, caps, GST_FORMAT_TIME);
+  gst_caps_unref (caps);
+
+  for (guint i = 0; i < G_N_ELEMENTS (sizes); i++) {
+    GstBuffer *input = gst_buffer_new_allocate (NULL, sizes[i], NULL);
+    gst_buffer_memset (input, 0, 0x69 + i, sizes[i]);
+    GST_BUFFER_PTS (input) = (i + 1) * GST_SECOND;
+    GST_BUFFER_DURATION (input) = GST_SECOND;
+    fail_unless_equals_int (gst_pad_push (mysrcpad, input), GST_FLOW_OK);
+  }
+  fail_unless (gst_pad_push_event (mysrcpad, gst_event_new_eos ()));
+
+  for (item = buffers; item != NULL; item = item->next) {
+    GstMapInfo map;
+    fail_unless (gst_buffer_map (item->data, &map, GST_MAP_READ));
+    fail_unless_equals_int (map.size % 188, 0);
+    for (gsize pos = 0; pos < map.size; pos += 188) {
+      const guint8 *packet = map.data + pos;
+      guint offset = 4;
+      guint pid = ((packet[1] & 0x1f) << 8) | packet[2];
+      fail_unless_equals_int (packet[0], 0x47);
+      if (pid != 65 || !(packet[3] & 0x10))
+        continue;
+      if (packet[3] & 0x20)
+        offset += 1 + packet[4];
+      fail_unless (offset <= 188);
+      if (offset == 188)
+        continue;
+      if (packet[1] & 0x40) {
+        const guint8 *pes = packet + offset;
+        guint64 pts;
+        if (unit > 0)
+          fail_unless_equals_int (copied, sizes[unit - 1]);
+        fail_unless (unit < G_N_ELEMENTS (sizes));
+        fail_unless (188 - offset >= 14);
+        fail_unless (pes[0] == 0 && pes[1] == 0 && pes[2] == 1);
+        fail_unless (pes[6] & 0x04,
+            "%s access unit %u lost data_alignment_indicator", media_type,
+            unit);
+        fail_unless (pes[7] & 0x80);
+        pts = ((guint64) ((pes[9] >> 1) & 7) << 30) |
+            ((guint64) pes[10] << 22) |
+            ((guint64) (pes[11] >> 1) << 15) |
+            ((guint64) pes[12] << 7) | (pes[13] >> 1);
+        if (unit == 0)
+          first_pts = pts;
+        fail_unless_equals_uint64 (pts - first_pts, unit * 90000);
+        offset += 9 + pes[8];
+        fail_unless (offset <= 188);
+        copied = 0;
+        unit++;
+      }
+      fail_unless (unit > 0);
+      for (; offset < 188; offset++) {
+        fail_unless (copied < sizes[unit - 1]);
+        fail_unless_equals_int (packet[offset], 0x69 + unit - 1);
+        copied++;
+      }
+    }
+    gst_buffer_unmap (item->data, &map);
+  }
+  fail_unless_equals_int (unit, G_N_ELEMENTS (sizes));
+  fail_unless_equals_int (copied, sizes[unit - 1]);
+  cleanup_tsmux (mux, padname);
+  g_free (padname);
+}
+
+GST_START_TEST (test_id3_metadata_alignment)
+{
+  check_metadata_alignment ("meta/x-id3", 0);
+}
+
+GST_END_TEST;
+
+GST_START_TEST (test_klv_metadata_alignment)
+{
+  check_metadata_alignment ("meta/x-klv", 0);
+}
+
+GST_END_TEST;
+
+GST_START_TEST (test_id3_metadata_alignment_cbr)
+{
+  check_metadata_alignment ("meta/x-id3", 420000);
+}
+
+GST_END_TEST;
+
+GST_START_TEST (test_klv_metadata_alignment_cbr)
+{
+  check_metadata_alignment ("meta/x-klv", 420000);
+}
+
+GST_END_TEST;
+
 static Suite *
 mpegtsmux_suite (void)
 {
@@ -648,6 +765,10 @@ mpegtsmux_suite (void)
 
   suite_add_tcase (s, tc_chain);
 
+  tcase_add_test (tc_chain, test_id3_metadata_alignment_cbr);
+  tcase_add_test (tc_chain, test_klv_metadata_alignment_cbr);
+  tcase_add_test (tc_chain, test_id3_metadata_alignment);
+  tcase_add_test (tc_chain, test_klv_metadata_alignment);
   tcase_add_test (tc_chain, test_audio);
   tcase_add_test (tc_chain, test_video);
   tcase_add_test (tc_chain, test_multiple_state_change);
